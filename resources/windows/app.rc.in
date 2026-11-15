@@ -1,0 +1,34 @@
+// Copyright (C) 2026 Naisu Xu
+// SPDX-License-Identifier: GPL-3.0-only
+
+#include <winver.h>
+
+1 ICON "@NICEECATM_SOURCE_DIR@/resources/icons/NiceECatM.ico"
+
+1 VERSIONINFO
+ FILEVERSION @NICEECATM_VERSION_YEAR@,@NICEECATM_VERSION_MONTHDAY@,@NICEECATM_VERSION_HOURMINUTE@,0
+ PRODUCTVERSION @NICEECATM_VERSION_YEAR@,@NICEECATM_VERSION_MONTHDAY@,@NICEECATM_VERSION_HOURMINUTE@,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "NiceECatM EtherCAT Workbench\0"
+            VALUE "FileVersion", "@NICEECATM_VERSION@\0"
+            VALUE "InternalName", "NiceECatM\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Naisu Xu\0"
+            VALUE "OriginalFilename", "NiceECatM.exe\0"
+            VALUE "ProductName", "NiceECatM\0"
+            VALUE "ProductVersion", "@NICEECATM_VERSION@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

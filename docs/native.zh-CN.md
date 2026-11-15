@@ -1,0 +1,125 @@
+# 构建与使用指南
+
+[English](native.md) | **简体中文** | [README](../README.zh-CN.md)
+
+## 构建环境
+
+Windows x64 需要 CMake 3.28+、支持 C++17 的 MinGW-w64 编译器、Make 和 windres，并将它们加入 PATH：
+
+```powershell
+./scripts/build-windows.ps1 -Jobs 4
+```
+
+脚本依次配置、构建、运行 CTest 并安装到 `dist/windows-x64/`。加入 `-Clean` 可重置配置，并从随附源码重新编译目标。应用为 `NiceECatM.exe`，应用依赖与字体静态链接或嵌入，运行时仍使用 Windows 系统库。
+
+Ubuntu 需要 C++17 编译器、Make、CMake 3.28+，以及机器上所选 SDL 显示后端的开发库。以下脚本按本机 CPU 架构构建：
+
+```sh
+./scripts/build-linux.sh
+```
+
+结果安装到 `dist/linux-$(uname -m)/NiceECatM`。加入 `--clean` 可重置配置并重新编译，使用 `NICEECATM_JOBS` 设置并行数。真实 EtherCAT 访问需要原始以太网套接字权限。Linux 构建与硬件运行仍需在对应 x86 或 ARM 目标机验证。
+
+SOEM、SDL、Dear ImGui、Lua、TinyXML2 和代码编辑器均以固定版本随源码放在 `third_party/`。安装好目标平台的构建环境后，配置和编译直接使用本地源码，无需下载依赖。依赖配置统一在 `cmake/dependencies.cmake`，版本、源归档哈希和适配记录见 [THIRD_PARTY.md](../THIRD_PARTY.md)。
+
+## 构建目录
+
+`windows-mingw-release` 是描述平台、编译器和构建类型的 CMake 预设。将 `build/windows-mingw-release/` 与 `build/linux-release/` 分开，可以避免不同工具链的缓存和目标文件混用。
+
+`build/` 下均为可重新生成的内容，`build/<预设>/_deps/` 保存已编译的依赖产物。删除 `build/` 后，依赖源码仍保留在 `third_party/`，重新构建无需联网。`dist/` 是安装目录，其中可能有用户放在可执行文件旁的文件，替换安装前应保留这些文件。
+
+手动操作的等价命令：
+
+```powershell
+cmake --preset windows-mingw-release
+cmake --build --preset windows-mingw-release --parallel 4
+ctest --preset windows-mingw-release
+cmake --install build/windows-mingw-release --prefix dist/windows-x64 --strip
+```
+
+配置时使用 `-DNICEECATM_BUILD_GUI=OFF` 可构建不含 SDL/ImGui 的 CLI；`NICEECATM_BUILD_TESTS` 控制测试目标。
+
+## 生成 Windows 发布包
+
+在源码目录完成 Release 构建和测试后执行：
+
+```powershell
+./scripts/package-windows.ps1
+```
+
+脚本复用已有构建，安装到干净的私有暂存目录，生成 `dist/NiceECatM-<yyyymmddhhmm>-windows-x64.zip` 和 `.zip.sha256`。压缩包包含命名的应用文件夹，内有程序、精简的中英文 README、项目许可证、第三方说明、随附 ESI 和示例脚本，不会打入开发安装目录的 `preferences.ini` 或用户脚本，也不清理 `dist/windows-x64/`。
+
+发布版 README 和第三方说明来自 `resources/release/`，与源码仓库首页分开维护；其中的相对链接按解压后的目录布局编写。发布包没有 `docs/` 目录，详细的构建、架构、验证、ESI 和 Lua 指南保留在源码仓库中。
+
+将压缩包解压到可写目录，启动其中的 `NiceECatM.exe`。发布打包不安装 Npcap，也不修改系统驱动。
+
+## 便携目录
+
+| 可执行文件旁的文件或目录 | 用途 |
+| --- | --- |
+| `NiceECatM.exe` / `NiceECatM` | 应用程序 |
+| `LICENSE` | 项目版权及许可证：Naisu Xu；GPL-3.0-only |
+| `licenses/` | 第三方许可证 |
+| `README.md`、`README.zh-CN.md` | 精简的中英文使用说明，含脚本章节 |
+| `THIRD_PARTY.md` | 第三方说明 |
+| `esi/` | 厂商 ESI XML |
+| `scripts/` | Lua 脚本和随附示例 |
+| `preferences.ini` | 界面语言，由应用创建或更新 |
+
+应用依据可执行文件目录解析这些路径，不受当前工作目录影响。修改配置或脚本时应使用可写目录。ESI 和 Lua 文件为可编辑数据，不需要额外安装语言运行时。
+
+软件版本使用本地构建时间 `yyyymmddhhmm`，界面、CLI 帮助与 Windows 版本资源共用该值。Windows 图标由 windres 编译，不需要 rcedit。
+
+## 连接总线
+
+Windows 真实设备访问需要已安装的 Npcap 或兼容 WinPcap，不随包分发驱动安装器或抓包 DLL。没有驱动时仍可使用 GUI 与模拟设备，真实网卡枚举会明确报错。
+
+选择有线物理网卡并扫描。单口模式使用一个接口；同一总线双口冗余使用两个不同接口，分别连接从站链两端。普通/overlapped 映射与网口数量相互独立。更改真实/模拟模式、网卡、连接模式或映射方式前，须先断开连接，再修改并重新扫描。
+
+扫描是主动执行的 SOEM 配置和映射流程，响应从站结束于 PRE-OP，并非被动抓包。扫描完成后，在拓扑中选中一个从站以查看其信号、身份、寄存器和 SDO。
+
+## 状态与周期 I/O
+
+| 操作 | 结果 |
+| --- | --- |
+| INIT | 请求 INIT，并停止周期交换 |
+| PRE-OP | 请求 PRE-OP，并停止周期交换 |
+| SAFE-OP | 请求 SAFE-OP 并启动周期交换；从站输出仍保持安全状态 |
+| OP | 请求 OP 并启动周期交换；从站可应用有效输出 PDO |
+| 断开连接 | 停止交换并关闭主站连接 |
+
+状态请求可能失败，应以实际 AL 与日志结果为准。目标选择可对全部从站或当前拓扑选中从站发起请求。实际从站状态包含 AL 错误标记。
+
+停止交换且全部从站处于 INIT/PRE-OP 时可调整目标周期。支持 500 us、1、2、5、10、20、50、100 ms，默认 10 ms。统计周期为主机测量结果，受到操作系统和驱动调度影响。
+
+Windows 周期调度使用高分辨率可等待定时器（waitable timer）。Npcap 每帧接收预算为 `min(max(目标周期, 2 ms), 10 ms)`。该预算不保证达到目标周期；实际周期偏差和跳过周期仍会统计。
+
+后台 AL 状态监测会区分未读到有效状态的 `NONE` 与已经确认的状态变化。PDO WKC 完整有效时，AL 读取失败可暂存该从站最后确认的状态，从首次失败起最长 2 秒。PDO WKC 无效或暂存到期后，该状态失效，必须取得新的 AL 回复才能写入输出。真实 INIT、SAFE-OP 和错误状态回复会立即采纳，显式状态切换始终需要重新确认。日志分别记录首次 AL 读取失败、暂存失效和读取恢复，与脚本回调错误、PDO WKC 异常区分。PDO 连续失败 2 秒仍会停止交换。
+
+## 页面
+
+- **BufferPDO：** 显示所选从站的信号、直接输出编辑和约 20 秒趋势。趋势保留 200 个界面采样点，不是逐总线周期记录。输入只读，停止/缓存数据保留已有趋势。
+- **ESC 寄存器：** 按 ESC 物理偏移访问字节。写入受已实现的寄存器规则与当前状态限制。
+- **CoE / SDO：** 手动填写 Index/SubIndex 读写。参考行是地址快捷项，不是自动发现的对象字典。
+- **Mailbox：** 显示设备声明的协议与服务可用情况；协议声明不代表对应服务已实现。
+- **设备 / DC：** 设备身份、映射布局与声明能力；DC 触发配置和读回尚未接入。
+- **诊断：** WKC、主机周期、总线上下文和 200 个采样点的周期偏差历史。
+- **脚本：** Lua 编辑器、文件列表、API 片段与自动化，详见[脚本指南](scripts.zh-CN.md)。
+- **日志：** 应用与脚本共用消息，选中单条后按 Ctrl+C 复制该条，提供跟随和清空。
+
+写入不设置全局解锁开关，但始终检查状态、方向、大小、映射和对象权限。在 PRE-OP/SAFE-OP 修改输出映像只是准备主站数据，不代表物理输出已生效。同步寄存器和 SDO 访问要求停止周期交换。
+
+## CLI
+
+```powershell
+./dist/windows-x64/NiceECatM.exe --help
+./dist/windows-x64/NiceECatM.exe --adapters
+./dist/windows-x64/NiceECatM.exe --simulate --scan
+./dist/windows-x64/NiceECatM.exe --scan --interface "<adapter name>"
+./dist/windows-x64/NiceECatM.exe --read-register 0x130 --length 6 --slave 1 --interface "<adapter name>"
+./dist/windows-x64/NiceECatM.exe --sdo-read 0x1008 --sub 0 --length 128 --slave 1 --interface "<adapter name>"
+```
+
+CLI 操作输出 JSON，硬件操作必须明确指定网卡。CLI 在目标操作前扫描和配置，完成后关闭后端，不是持续周期运行器。可使用 `--secondary NAME`、`--overlap`、`--cycle-us` 等选项。GUI 可通过 `--language en` 或 `--language zh-CN` 指定启动语言。
+
+复现检查见[验证文档](native-validation.zh-CN.md)，实现边界见[架构文档](design.zh-CN.md)。
