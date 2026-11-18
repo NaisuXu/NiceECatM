@@ -226,4 +226,5 @@ void configureWorkbench(const char* language,const char* tab,int slave) {
     if(slave>0){ui.selected=slave;ui.requestedSlave=slave;}
 }
 void configureWorkbenchSource(bool simulation) { ui.config.simulation=simulation; }
+void configureWorkbenchUpdates(updates::Checker* checker) { ui.updater=checker; }
 }

@@ -35,7 +35,7 @@ Windows x64 是当前本机验证的平台。Ubuntu x86/ARM 为构建目标，�
 
 完成构建与验证后，运行 `./scripts/package-windows.ps1` 生成 `dist/NiceECatM-<yyyymmddhhmm>-windows-x64.zip` 及其 `.zip.sha256` 校验文件。打包使用干净的安装暂存目录，包含程序、精简的中英文 README、许可证、ESI 和示例，不从 `dist/windows-x64/` 复制本地用户配置或脚本。详细的构建、架构、验证、ESI 和 Lua 文档保留在源码仓库中。
 
-包括 SDL 和 Dear ImGui 在内的代码依赖均以固定版本随源码放在 `third_party/`。安装好目标平台的构建环境后，配置和编译可离线完成。字体与应用依赖静态嵌入，不需要浏览器、Node、Go、Python 或独立图形运行时。Windows 图标由 MinGW 资源编译器生成，不需要 rcedit。
+包括 SDL 和 Dear ImGui 在内的随附应用库均以固定版本放在 `third_party/`。安装好目标平台的构建环境后，配置和编译可离线完成。字体与随附应用库静态嵌入，不需要 Node、Go、Python 或独立图形运行时。Windows 图标由 MinGW 资源编译器生成，不需要 rcedit。
 
 Windows 真实网卡访问需要安装 Npcap 或兼容的 WinPcap。缺少抓包驱动时仍可打开 GUI 和使用模拟设备。厂商 ESI XML 文件放在可执行文件旁的 `esi/` 中，用于补充设备信号描述。
 
@@ -54,6 +54,8 @@ Linux 需要 C++17 编译器、CMake 3.28+、Make，以及所选 SDL 显示后�
 CoE / SDO 显示所选从站的对象字典，来源包括匹配的 ESI，以及从站支持时在 PRE-OP 获取的在线 SDO Information。选择条目可填入地址和类型，当前值需手动读取。列表区分来源并提示获取不完整的情况，不会把 ESI 默认值显示成设备当前值。
 
 界面默认英文，语言偏好保存在可执行文件旁的 `preferences.ini`，脚本保存在旁边的 `scripts/`。软件版本采用构建时间 `yyyymmddhhmm`，界面、CLI 帮助与 Windows 文件属性保持一致。
+
+点击右上角版本号可打开 [GitHub Releases](https://github.com/NaisuXu/NiceECatM/releases)。桌面程序每次启动后在后台检查一次最新正式版本，发现新版时显示小型“有新版本”链接；其它结果仅在版本号悬停提示中显示，不弹窗、不写日志。下载和安装由用户手动完成。
 
 ## 项目结构
 

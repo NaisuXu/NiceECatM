@@ -20,6 +20,10 @@ Ubuntu 需要 C++17 编译器、Make、CMake 3.28+，以及机器上所选 SDL �
 
 结果安装到 `dist/linux-$(uname -m)/NiceECatM`。加入 `--clean` 可重置配置并重新编译，使用 `NICEECATM_JOBS` 设置并行数。真实 EtherCAT 访问需要原始以太网套接字权限。Linux 构建与硬件运行仍需在对应 x86 或 ARM 目标机验证。
 
+后台版本检测在 Windows 使用系统 WinHTTP，在 Linux 使用可选的 libcurl。Ubuntu 配置构建前安装 `libcurl4-openssl-dev` 即可启用；未安装时仍可点击版本号打开 Releases，但不进行网络检测。普通桌面启动时仅检查 GitHub 一次，CLI 与界面冒烟测试不发起更新请求。检测独立于 EtherCAT 传输，不阻塞界面、不弹窗、不写日志。正式发布的 tag 使用构建版本 `yyyymmddhhmm`（也接受 `v` 前缀），不检测草稿与预发布版本。
+
+若 Linux 程序链接共享 libcurl，目标系统还须安装匹配的运行库（通常为 Ubuntu 的 `libcurl4` 包）；构建时可选不代表已链接的二进制文件在运行时可以缺少该库。
+
 SOEM、SDL、Dear ImGui、Lua、TinyXML2 和代码编辑器均以固定版本随源码放在 `third_party/`。安装好目标平台的构建环境后，配置和编译直接使用本地源码，无需下载依赖。依赖配置统一在 `cmake/dependencies.cmake`，版本、源归档哈希和适配记录见 [THIRD_PARTY.md](../THIRD_PARTY.md)。
 
 ## 构建目录

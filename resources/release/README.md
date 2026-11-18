@@ -12,6 +12,8 @@ Project: [NiceECatM on GitHub](https://github.com/NaisuXu/NiceECatM)
 2. For real Windows devices, install [Npcap](https://npcap.com/#download) separately, or use a compatible WinPcap installation. If driver access is restricted to administrators, run with the corresponding privileges.
 3. Use **EN** / **中文** at the upper right to change language. English is the default.
 
+Click the version at the upper right to open [GitHub Releases](https://github.com/NaisuXu/NiceECatM/releases). A silent background check runs once at startup; **New version** appears beside the version when a newer stable release exists. There are no update popups or Log messages, including when offline. Download and install releases manually.
+
 For a hardware-free trial, choose **Simulation** in **CONNECTION** while disconnected, then **Scan devices**. The default is **Hardware**. Linux needs its corresponding binary and raw Ethernet permissions; the current ZIP contains only the Windows x64 application.
 
 ## Windows / Intel adapter setting

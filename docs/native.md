@@ -20,6 +20,10 @@ Ubuntu requires a C++17 compiler, Make, CMake 3.28+ and development libraries fo
 
 The result is installed to `dist/linux-$(uname -m)/NiceECatM`. Add `--clean` for a configuration reset and target rebuild; set `NICEECATM_JOBS` to choose parallelism. Real EtherCAT access requires permission to use raw Ethernet sockets. Linux builds and hardware operation require validation on the target x86 or ARM machine.
 
+Background release detection uses Windows WinHTTP or optional libcurl on Linux. Install `libcurl4-openssl-dev` before configuring Ubuntu to enable it. Without libcurl, the Linux build keeps the clickable Releases link and skips network detection. Normal desktop launches check GitHub once; CLI and UI smoke runs make no update requests. Detection never uses the EtherCAT transport, blocks the UI, opens a dialog or writes to the Log. Release tags must use the build version `yyyymmddhhmm` (an optional `v` prefix is accepted); drafts and prereleases are excluded.
+
+A Linux executable linked against shared libcurl also needs the matching runtime library on its destination system (normally Ubuntu's `libcurl4` package); build-time fallback does not remove that runtime dependency from an already linked binary.
+
 SOEM, SDL, Dear ImGui, Lua, TinyXML2 and the code editor are provided at fixed versions in `third_party/`. Configuration and compilation use these local sources and need no dependency downloads once the platform prerequisites are installed. Dependency setup is centralized in `cmake/dependencies.cmake`; versions, source archive hashes and adaptations are recorded in [THIRD_PARTY.md](../THIRD_PARTY.md).
 
 ## Build directories

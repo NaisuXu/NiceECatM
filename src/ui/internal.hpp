@@ -18,6 +18,7 @@ struct Ui {
     bool initialized=false, chinese=false, awaiting=false, allStates=true, languageOverride=false;
     bool sdoHex=false, autoScroll=true;
     Connection config;
+    updates::Checker* updater=nullptr;
     int selected=0, requestedSlave=0, regLength=2;
     int sdoType=13, sdoCapacity=256;
     uint64_t seenCompletion=0;

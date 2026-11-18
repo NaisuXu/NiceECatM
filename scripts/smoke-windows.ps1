@@ -35,6 +35,11 @@ try {
     $env:SDL_VIDEODRIVER = 'dummy'
     $env:SDL_RENDER_DRIVER = 'software'
     foreach ($language in @('en', 'zh-CN')) {
+        # Deterministic injected results; this mode performs no HTTPS requests.
+        foreach ($updateState in @('available', 'current', 'unavailable')) {
+            & $app --ui-smoke-update $updateState --language $language --width 1100 --height 720 --frames 25 --screenshot (Join-Path $smokeRoot "$language-update-$updateState.bmp")
+            if ($LASTEXITCODE -ne 0) { throw "Silent update/header smoke failed: $language / $updateState" }
+        }
         foreach ($tab in @('device', 'registers', 'pdo', 'mailbox', 'sdo', 'diagnostics', 'scripts')) {
             & $app --ui-smoke --language $language --tab $tab --device 5 --frames 25 --screenshot (Join-Path $smokeRoot "$language-$tab.bmp")
             if ($LASTEXITCODE -ne 0) { throw "GUI smoke failed: $language / $tab" }
@@ -65,7 +70,7 @@ try {
     if ($LASTEXITCODE -ne 1 -or $missingDriver.ok) { throw 'Missing driver did not produce an explicit failure.' }
     & $app --ui-smoke --frames 25 --screenshot (Join-Path $smokeRoot 'no-driver.bmp')
     if ($LASTEXITCODE -ne 0) { throw 'GUI failed without a capture driver.' }
-    Write-Output '14 bilingual page captures, 6 window-size captures, 6 populated diagnostics and 6 populated SDO dictionary layout checks, simulation scan and missing-driver checks passed. No hardware scan performed.'
+    Write-Output '14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics and 6 populated SDO dictionary layout checks, simulation scan and missing-driver checks passed. No hardware scan performed.'
 } finally {
     $env:SDL_VIDEODRIVER = $oldVideo
     $env:SDL_RENDER_DRIVER = $oldRenderer

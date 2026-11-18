@@ -17,7 +17,9 @@ The project's own copyright notice is Copyright (C) 2026 Naisu Xu; see [LICENSE]
 
 ## Dependency management
 
-`cmake/dependencies.cmake` owns dependency targets. All code dependencies are vendored under `third_party/` at the versions listed above. Configuration and compilation use local sources, and generated files stay inside the active build preset. Removing `build/` does not remove dependency source or require a dependency download on the next build.
+`cmake/dependencies.cmake` owns vendored dependency targets. The application libraries listed above are vendored under `third_party/`. Configuration and compilation use local sources, and generated files stay inside the active build preset. Removing `build/` does not remove dependency source or require a dependency download on the next build.
+
+Release detection uses system WinHTTP on Windows and optional system libcurl on Linux. Libcurl is discovered by CMake and is not vendored or included in the Windows package; Linux installations retain their distribution's libcurl license notices. Without libcurl, the release-page link remains available and background detection is disabled.
 
 The SOEM, SDL and Dear ImGui source copies come from the upstream commit archives below. These SHA256 values record their provenance; CMake does not download these archives during a build.
 

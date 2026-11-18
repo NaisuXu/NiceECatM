@@ -3,6 +3,8 @@
 
 #include "ui/internal.hpp"
 #include "build_version.hpp"
+#include "platform/update_check.hpp"
+#include <SDL3/SDL_misc.h>
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -32,6 +34,26 @@ bool tintButton(const char* text,ImVec2 size,bool active,ImVec4 activeColor=teal
     ImGui::PushStyleColor(ImGuiCol_Button,active?ImVec4{activeColor.x,activeColor.y,activeColor.z,.12f}:ImGui::GetStyleColorVec4(ImGuiCol_Button));
     ImGui::PushStyleColor(ImGuiCol_Text,active?activeColor:ImGui::GetStyleColorVec4(ImGuiCol_Text));
     const bool pressed=ImGui::Button(text,size);ImGui::PopStyleColor(2);return pressed;
+}
+void versionTooltip(const updates::View& update) {
+    if(!ImGui::IsItemHovered())return;
+    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    ImGui::BeginTooltip();
+    ImGui::Text("%s: %s",tr("Current version","当前版本"),NICEECATM_VERSION);
+    if(!update.latestVersion.empty())ImGui::Text("%s: %s",tr("Latest release","最新正式版本"),update.latestVersion.c_str());
+    switch(update.state) {
+    case updates::State::Checking: ImGui::TextUnformatted(tr("Checking for updates...","正在检查更新…"));break;
+    case updates::State::Available: ImGui::TextUnformatted(tr("A new version is available.","有新版本可用。"));break;
+    case updates::State::Current: ImGui::TextUnformatted(tr("No newer release is available.","没有更新的正式版本。"));break;
+    case updates::State::NoRelease: ImGui::TextUnformatted(tr("No published release was found.","尚未找到正式发布的版本。"));break;
+    case updates::State::Unavailable:
+        ImGui::TextUnformatted(tr("Update check unavailable.","暂时无法检查更新。"));
+        if(!update.detail.empty())ImGui::TextUnformatted(update.detail.c_str());
+        break;
+    default:break;
+    }
+    ImGui::TextUnformatted(tr("Click to open the Releases page.","点击打开 Releases 页面。"));
+    ImGui::EndTooltip();
 }
 uint16_t scopeState(const Snapshot& s) {
     if(!s.connected||s.slaves.empty())return 0;
@@ -97,7 +119,20 @@ void topBar(const Snapshot&) {
     const float languageX=width-99;
     const float versionSize=13.f;
     const float versionWidth=font(fonts.small)->CalcTextSizeA(versionSize,10000,0,version).x;
-    textAt(languageX-16-versionWidth,18,version,{.62f,.72f,.80f,1},fonts.small,versionSize);
+    const float versionX=languageX-16-versionWidth;
+    const auto update=ui.updater?ui.updater->snapshot():updates::View{};
+    ImGui::SetCursorPos({versionX-4,12});
+    if(ImGui::InvisibleButton("version-releases",{versionWidth+8,28}))SDL_OpenURL(updates::ReleasesUrl);
+    const bool versionHovered=ImGui::IsItemHovered();
+    textAt(versionX,18,version,versionHovered?ImVec4{.72f,.91f,.93f,1}:ImVec4{.62f,.72f,.80f,1},fonts.small,versionSize);
+    versionTooltip(update);
+    if(update.state==updates::State::Available) {
+        const char* text=tr("New version","有新版本");
+        const float badgeWidth=ImGui::CalcTextSize(text).x+18;
+        ImGui::SetCursorPos({versionX-badgeWidth-16,14});
+        if(tintButton(text,{badgeWidth,24},true,{.33f,.79f,.81f,1}))SDL_OpenURL(updates::ReleasesUrl);
+        versionTooltip(update);
+    }
     ImGui::SetCursorPos({languageX,14});
     if(tintButton("EN###lang-en",{35,24},!ui.chinese,{.41f,.81f,.83f,1})){ui.chinese=false;savePreferences();}
     ImGui::SetCursorPos({languageX+39,14});

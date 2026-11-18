@@ -3,6 +3,8 @@
 
 #include "app/cli.hpp"
 #include "ui/workbench.hpp"
+#include "platform/update_check.hpp"
+#include "build_version.hpp"
 #include <SDL3/SDL.h>
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -15,9 +17,13 @@
 const char* niceecatmFontData();
 const char* niceecatmMonoFontData();
 int runDesktop(int argc,char**argv) {
-    int frames=0,device=0,width=1366,height=768;bool smoke=false,smokeCyclic=false;std::string screenshot,language,tab;
+    int frames=0,device=0,width=1366,height=768;bool smoke=false,smokeCyclic=false;std::string screenshot,language,tab,smokeUpdate;
     for(int i=1;i<argc;++i){std::string a=argv[i];if(a=="--ui-smoke")smoke=true;
       else if(a=="--ui-smoke-cyclic"){smoke=true;smokeCyclic=true;}
+      else if(a=="--ui-smoke-update"&&i+1<argc){
+        smoke=true;smokeUpdate=argv[++i];
+        if(smokeUpdate!="available"&&smokeUpdate!="unavailable"&&smokeUpdate!="current")return 2;
+      }
       else if(a=="--frames"&&i+1<argc)frames=std::max(1,std::atoi(argv[++i]));
       else if(a=="--screenshot"&&i+1<argc)screenshot=argv[++i];
       else if(a=="--language"&&i+1<argc){language=argv[++i];if(language!="en"&&language!="zh-CN")return 2;}
@@ -50,6 +56,15 @@ int runDesktop(int argc,char**argv) {
     ImGui_ImplSDL3_InitForSDLRenderer(window,renderer);ImGui_ImplSDLRenderer3_Init(renderer);
     niceecatm::configureWorkbench(language.empty()?nullptr:language.c_str(),tab.empty()?nullptr:tab.c_str(),device);
     niceecatm::configureWorkbenchSource(smoke);
+    niceecatm::updates::Checker updateChecker;
+    niceecatm::configureWorkbenchUpdates(&updateChecker);
+    // No network requests in CLI/smoke runs, and no master commands in this worker.
+    if(!smoke)updateChecker.start(NICEECATM_VERSION);
+    else if(!smokeUpdate.empty())updateChecker.start(NICEECATM_VERSION,[smokeUpdate](const std::atomic<bool>&) {
+      if(smokeUpdate=="unavailable")return niceecatm::updates::Response{0,{},"Offline smoke fixture"};
+      const std::string version=smokeUpdate=="available"?"209901010000":NICEECATM_VERSION;
+      return niceecatm::updates::Response{200,"{\"tag_name\":\""+version+"\",\"draft\":false,\"prerelease\":false}",{}};
+    });
     niceecatm::Controller controller;
     if(smoke){niceecatm::Command c;c.kind=niceecatm::CommandKind::Scan;c.connection.simulation=true;c.connection.primary="sim0";controller.submit(c);}
     else {niceecatm::Command c;c.kind=niceecatm::CommandKind::RefreshAdapters;c.connection.simulation=false;controller.submit(c);}
@@ -83,6 +98,20 @@ int runDesktop(int argc,char**argv) {
       ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(),renderer);
       ++frame;
       if(frames>0&&frame>=frames&&(!smokeCyclic||cyclicSamples>=3||frame>=frames+300)){
+        if(!smokeUpdate.empty()) {
+          const auto expected=smokeUpdate=="available"?niceecatm::updates::State::Available:
+            smokeUpdate=="current"?niceecatm::updates::State::Current:niceecatm::updates::State::Unavailable;
+          if(updateChecker.snapshot().state!=expected){std::cerr<<"Update UI fixture did not finish.\n";exitCode=1;}
+          for(const auto* child:ImGui::GetCurrentContext()->Windows) {
+            const char* leaf=std::strrchr(child->Name,'/');leaf=leaf?leaf+1:child->Name;
+            if(child->Active&&std::strncmp(leaf,"top_",4)==0&&(child->ScrollMax.x>0.5f||child->ScrollMax.y>0.5f)) {
+              std::cerr<<"Update header layout overflow.\n";exitCode=1;
+            }
+            if(child->Active&&(child->Flags&ImGuiWindowFlags_Popup)) {
+              std::cerr<<"Update check unexpectedly opened a popup.\n";exitCode=1;
+            }
+          }
+        }
         if(smoke&&!smokeCyclic&&tab=="sdo"&&device==4) {
           const auto snapshot=controller.snapshot();
           if(snapshot.slaves.size()<4||!snapshot.slaves[3].sdoDictionary||!snapshot.slaves[3].sdoDictionary->complete||snapshot.slaves[3].sdoDictionary->objects.size()!=4) {
@@ -123,6 +152,9 @@ int runDesktop(int argc,char**argv) {
       SDL_RenderPresent(renderer);SDL_Delay(5);
     }
     niceecatm::shutdownScripts();
+    niceecatm::configureWorkbenchUpdates(nullptr);
     SDL_StopTextInput(window);
-    ImGui_ImplSDLRenderer3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);SDL_Quit();return exitCode;
+    ImGui_ImplSDLRenderer3_Shutdown();ImGui_ImplSDL3_Shutdown();ImGui::DestroyContext();SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);SDL_Quit();
+    updateChecker.stop();
+    return exitCode;
 }

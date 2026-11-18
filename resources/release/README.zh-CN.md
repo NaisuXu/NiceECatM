@@ -12,6 +12,8 @@ NiceECatM 是 EtherCAT 图形测试工具，提供从站扫描、状态控制、
 2. Windows 访问真实设备时，单独安装 [Npcap](https://npcap.com/#download)，或使用兼容的 WinPcap。如果驱动限制管理员访问，则以相应权限启动。
 3. 使用右上角 **EN** / **中文** 切换语言，默认使用英文。
 
+点击右上角版本号可打开 [GitHub Releases](https://github.com/NaisuXu/NiceECatM/releases)。启动时在后台静默检查一次，发现更新的正式版本时在旁边显示“有新版本”。检测结果和网络不可用均不弹窗、不写日志，下载与安装由用户手动完成。
+
 无需硬件体验时，在断开状态下选择**连接配置**中的**模拟设备**，再点击**扫描设备**。默认使用**真实设备**。Linux 需对应二进制文件和原始以太网权限，当前 ZIP 仅包含 Windows x64 应用。
 
 ## Windows / Intel 网卡设置

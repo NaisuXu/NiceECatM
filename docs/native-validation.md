@@ -21,12 +21,15 @@ The clean option resets CMake configuration and rebuilds targets from `third_par
 | `esi_catalog` | XML parsing, identity/layout matching, metadata fallback and offline SDO dictionaries (scalars, records, arrays, permissions, conflicts and invalidation) |
 | `pdo_layout` | Process-image extents, failed mapping rejection and valid zero-byte mapping |
 | `script_runtime` | Lua limits, host operations, timer/cycle scheduling and cancellation |
+| `update_check` | Release JSON and timestamp validation, version comparison, HTTP failures, one-shot worker lifecycle and cancellation, using injected responses without network access |
 | `cyclic_state_poll` | Deterministic AL-read fault injection: transient NONE, real state/error replies, per-slave recovery, bounded cache lifetime, PDO invalidation and reconnect isolation |
 | `soem_segmented_sdo` | 57 deterministic SDO scenarios: upload/download, Complete Access acknowledgements, invalid requests, loop deadlines, malformed responses and mailbox ownership |
 | `soem_sdo_information` | 49 mock mailbox scenarios: description identity/length, list fragmentation, incomplete/skipped fragments, limits, errors and ownership |
 | `sdo_dictionary` | 18 enumeration checks: sparse subindices, partial dictionaries, string types, error isolation/classification, immutable metadata and time/request/object limits |
 
 The GUI smoke script uses SDL's dummy video driver and software renderer. It checks all seven pages in English/Chinese, PDO at three window sizes, populated diagnostic history layouts, populated SDO dictionaries at three window sizes, a simulated scan and explicit missing-capture-driver behavior. SDO checks require discovery to complete and the page/dictionary header containers to have no scroll overflow. It never scans a real bus.
+
+Six additional offline checks inject available/current/unavailable release results in English and Chinese at the minimum window size. They verify header scroll bounds and the absence of popups; the available result displays the release hint. `--ui-smoke-update available|current|unavailable` always uses a fixture and never contacts GitHub.
 
 Online dictionary discovery has not been validated against a physical CoE slave with SDO Information. The bundled AX58100 and LAN9252 ESI files describe PDOs only; their absence of dictionary definitions is tested as an empty-description case, not treated as successful online enumeration.
 

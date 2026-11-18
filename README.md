@@ -35,7 +35,7 @@ For a packaged Windows release, extract the ZIP and start `NiceECatM.exe` inside
 
 After building and validating, run `./scripts/package-windows.ps1` to create `dist/NiceECatM-<yyyymmddhhmm>-windows-x64.zip` and its `.zip.sha256` checksum. Packaging uses a clean install stage and includes the executable, concise English/Chinese README files, licenses, ESI and examples; it does not copy local user preferences or scripts from `dist/windows-x64/`. Release README files and third-party notices are maintained in `resources/release/`. Detailed build, architecture, validation, ESI and Lua documentation stays in the source checkout.
 
-All code dependencies, including SDL and Dear ImGui, are provided at fixed versions in `third_party/`. Once platform build prerequisites are installed, configuration and compilation can run offline. Fonts and application libraries are embedded; no browser, Node, Go, Python or separate GUI runtime is needed. The Windows icon is built with MinGW's resource compiler; rcedit is not required.
+The bundled application libraries, including SDL and Dear ImGui, are provided at fixed versions in `third_party/`. Once platform build prerequisites are installed, configuration and compilation can run offline. Fonts and bundled application libraries are embedded; no Node, Go, Python or separate GUI runtime is needed. The Windows icon is built with MinGW's resource compiler; rcedit is not required.
 
 Install Npcap or a compatible WinPcap installation for real Windows adapter access. The GUI and simulation work without a capture driver. Place manufacturer ESI XML files in `esi/` beside the executable for device-specific signal descriptions.
 
@@ -54,6 +54,8 @@ The default target period is 10 ms; available periods are 500 us, 1, 2, 5, 10, 2
 CoE / SDO displays the selected slave's object dictionary from a matching ESI and, when supported, online SDO Information in PRE-OP. Select an entry to fill its address and type; read values explicitly. Sources and partial discovery are identified, and ESI default values are never presented as current device values.
 
 English is the default UI language. The language preference is stored in `preferences.ini` beside the executable. Scripts live in the adjacent `scripts/` directory. Build-time versions use `yyyymmddhhmm` consistently in the UI, CLI help and Windows file properties.
+
+Click the version at the upper right to open [GitHub Releases](https://github.com/NaisuXu/NiceECatM/releases). Each desktop launch checks the latest stable release once in the background. A newer release adds a small **New version** link; all other results stay in the version tooltip, with no popups or Log messages. Updates are downloaded and installed manually.
 
 ## Project layout
 

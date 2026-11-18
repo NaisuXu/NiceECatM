@@ -14,6 +14,8 @@ add_library(niceecatm_core STATIC
   src/model/types.cpp
   src/model/pdo.cpp
   src/platform/paths.cpp
+  src/platform/update_check.cpp
+  src/platform/update_transport.cpp
   src/esi/catalog.cpp
   src/master/controller.cpp
   src/script/bridge.cpp
@@ -22,6 +24,16 @@ add_library(niceecatm_core STATIC
   src/ethercat/soem_backend.cpp)
 target_include_directories(niceecatm_core PUBLIC src)
 target_link_libraries(niceecatm_core PUBLIC soem Threads::Threads PRIVATE niceecatm_xml niceecatm_lua)
+if(WIN32)
+  target_link_libraries(niceecatm_core PRIVATE winhttp)
+elseif(UNIX)
+  # Updates are optional: offline builds still have the Releases page link.
+  find_package(CURL QUIET)
+  if(CURL_FOUND)
+    target_link_libraries(niceecatm_core PRIVATE CURL::libcurl)
+    target_compile_definitions(niceecatm_core PRIVATE NICEECATM_HAVE_CURL=1)
+  endif()
+endif()
 if(MSVC)
   target_compile_options(niceecatm_core PRIVATE /utf-8 /W4)
 else()
