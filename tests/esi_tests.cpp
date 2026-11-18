@@ -100,6 +100,74 @@ int main() {
         auto aliased=snapshot({online(false,0,16,0x1600,0x7000,1)},0,16);dictionaryCatalog.decorate(aliased);
         check(aliased.slaves[0].pdoEntries[0].type=="INT16"&&pdoEntryName(aliased.slaves[0].pdoEntries[0],false)=="Dictionary label","Dictionary supplies missing entry name and type");
 
+        const std::string objectTypes=R"(<DataTypes>
+          <DataType><Name>SignedAlias</Name><BitSize>16</BitSize><BaseType>INT</BaseType></DataType>
+          <DataType><Name>Record</Name><BitSize>48</BitSize>
+            <SubItem><SubIdx>0</SubIdx><Name>Number of entries</Name><Type>USINT</Type><BitSize>8</BitSize><Flags><Access>ro</Access></Flags></SubItem>
+            <SubItem><SubIdx>1</SubIdx><Name>Gain</Name><DisplayName LcId="1033">Input gain</DisplayName><DisplayName LcId="2052">输入增益</DisplayName><Type>SignedAlias</Type><BitSize>16</BitSize></SubItem>
+            <SubItem><SubIdx>3</SubIdx><Name>Command</Name><Type>UINT</Type><BitSize>16</BitSize><Flags><Access WriteRestrictions="OP">wo</Access></Flags></SubItem>
+          </DataType>
+          <DataType><Name>WordArray</Name><BaseType>UINT</BaseType><BitSize>64</BitSize><ArrayInfo><LBound>1</LBound><Elements>4</Elements></ArrayInfo></DataType>
+          <DataType><Name>Assignment</Name><BitSize>80</BitSize>
+            <SubItem><SubIdx>0</SubIdx><Name>Number of entries</Name><Type>USINT</Type><BitSize>8</BitSize><Flags><Access>ro</Access></Flags></SubItem>
+            <SubItem><Name>Elements</Name><Type>WordArray</Type><BitSize>64</BitSize><Flags><Access WriteRestrictions="PreOp">rw</Access></Flags></SubItem>
+          </DataType>
+        </DataTypes>)";
+        const std::string objectList=R"(<Objects>
+          <Object><Index>#x8000</Index><Name>Parameters</Name><Type>Record</Type><BitSize>48</BitSize><Flags><Access WriteRestrictions="PreOP_SafeOP">rw</Access></Flags></Object>
+          <Object><Index>#x1008</Index><Name LcId="1033">Device name</Name><Type>STRING(8)</Type><BitSize>64</BitSize><Info><DefaultString>offline</DefaultString></Info><Flags><Access>ro</Access></Flags></Object>
+          <Object><Index>#x1c12</Index><Name>Assignments</Name><Type>Assignment</Type><BitSize>80</BitSize><Flags><Access>rw</Access></Flags></Object>
+          <Object><Index>#x2000</Index><Name>Operating counter</Name><Type>UDINT</Type><BitSize>32</BitSize><Flags><Access ReadRestrictions="OP" WriteRestrictions="PreOP_SafeOP">rw</Access></Flags></Object>
+          <Object><Index>#x2001</Index><Name>Unknown access</Name><Type>UINT</Type><BitSize>16</BitSize></Object>
+          <Object><Index>#x2002</Index><Name>Unrecognized restriction</Name><Type>USINT</Type><BitSize>8</BitSize><Flags><Access WriteRestrictions="Other">rw</Access></Flags></Object>
+        </Objects>)";
+        const auto dictionaryXml="<Profile><Dictionary>"+objectTypes+objectList+"</Dictionary></Profile>";
+        write(dictionarySource,document("","1",dictionaryXml));
+        check(dictionaryCatalog.reload().ok,"Dictionary-only ESI loads without PDO definitions");
+        auto odView=snapshot({},0,16);odView.slaves[0].outputLayoutKnown=false;
+        auto liveDictionary=std::make_shared<SdoDictionary>();liveDictionary->status="Existing live description";odView.slaves[0].sdoDictionary=liveDictionary;
+        dictionaryCatalog.decorate(odView);
+        const auto offline=odView.slaves[0].esiSdoDictionary;
+        check(offline&&offline->complete&&offline->objects.size()==6,"Full object dictionary is independent of actual PDO layout");
+        check(odView.slaves[0].sdoDictionary==liveDictionary,"ESI decoration preserves online dictionary ownership");
+        const auto& deviceName=offline->objects[0];const auto& assignments=offline->objects[1];const auto& counter=offline->objects[2];const auto& parameters=offline->objects[5];
+        check(deviceName.index==0x1008&&deviceName.entries.size()==1&&deviceName.entries[0].subindex==0&&deviceName.entries[0].type=="STRING"&&deviceName.entries[0].bitLength==64,"String scalar metadata resolves without treating its default as a live value");
+        check(deviceName.entries[0].accessKnown&&deviceName.entries[0].access==7&&deviceName.entries[0].esi&&!deviceName.entries[0].online,"Offline read-only rights and source retained");
+        check(counter.index==0x2000&&counter.entries[0].type=="UINT32"&&counter.entries[0].dataType==7&&counter.entries[0].access==28,"Read/write state restrictions map to CoE access bits");
+        check(!offline->objects[3].entries[0].accessKnown&&!offline->objects[4].entries[0].accessKnown,"Absent or unknown access information remains unknown");
+        check(parameters.index==0x8000&&parameters.entries.size()==3&&parameters.maxSubindex==3&&parameters.entries[1].subindex==1,"Record preserves sparse actual subindices");
+        check(parameters.entries[1].type=="INT16"&&parameters.entries[1].access==31&&parameters.entries[2].access==32,"Aliases resolve and subitem rights override/inherit object rights");
+        check(parameters.entries[1].names.size()==2&&parameters.entries[1].names[1].text==u8"输入增益","Record display names retain declared languages");
+        check(assignments.index==0x1c12&&assignments.entries.size()==5&&assignments.maxSubindex==4,"Array container expands bounded SDO subindices and preserves subindex zero");
+        check(assignments.entries[4].subindex==4&&assignments.entries[4].type=="UINT16"&&assignments.entries[4].bitLength==16&&assignments.entries[4].access==15,"Array element width excludes container alignment and recognizes legacy PreOp spelling");
+        check(assignments.entries[4].names[0].text=="Elements [4]","Array members have distinct readable labels");
+        auto odWrongRevision=odView;odWrongRevision.slaves[0].revision=2;dictionaryCatalog.decorate(odWrongRevision);
+        check(!odWrongRevision.slaves[0].esiSdoDictionary&&odWrongRevision.slaves[0].sdoDictionary==liveDictionary,"Revision mismatch clears stale offline dictionary but preserves online metadata");
+        auto odWrongVendor=odView;odWrongVendor.slaves[0].vendor=1;dictionaryCatalog.decorate(odWrongVendor);
+        check(!odWrongVendor.slaves[0].esiSdoDictionary,"Dictionary identity requires the exact vendor");
+        const auto dictionaryDuplicate=dictionarySource.parent_path()/"duplicate.xml";
+        write(dictionaryDuplicate,document("","1",dictionaryXml));check(dictionaryCatalog.reload().ok,"Equivalent dictionaries load");
+        dictionaryCatalog.decorate(odView);check(odView.esiDevices==1&&odView.slaves[0].esiSdoDictionary,"Equivalent dictionary-only descriptions deduplicate");
+        auto changedObjects=objectList;changedObjects.replace(changedObjects.find("Operating counter"),17,"Different counter");
+        write(dictionaryDuplicate,document("","1","<Profile><Dictionary>"+objectTypes+changedObjects+"</Dictionary></Profile>"));
+        check(dictionaryCatalog.reload().ok,"Different dictionaries retain their identity conflict");dictionaryCatalog.decorate(odView);
+        check(odView.esiDevices==2&&!odView.slaves[0].esiSdoDictionary&&odView.slaves[0].esiStatus=="Ambiguous ESI device identity","Equal PDO layouts cannot hide conflicting SDO dictionaries");
+        fs::remove(dictionaryDuplicate);fs::remove(dictionarySource);check(dictionaryCatalog.reload().ok,"Removed dictionary files reload cleanly");dictionaryCatalog.decorate(odView);
+        check(!odView.slaves[0].esiSdoDictionary&&odView.slaves[0].sdoDictionary==liveDictionary,"Removing ESI clears offline dictionary on an existing snapshot");
+
+        const auto edgeSource=temp.directory/"dictionary-edges"/"edges.xml";EsiCatalog edgeCatalog(edgeSource.parent_path());
+        const std::string multiArray="<DataTypes><DataType><Name>Matrix</Name><BaseType>UINT</BaseType><BitSize>64</BitSize><ArrayInfo><LBound>1</LBound><Elements>2</Elements></ArrayInfo><ArrayInfo><LBound>1</LBound><Elements>2</Elements></ArrayInfo></DataType></DataTypes><Objects><Object><Index>#x2100</Index><Name>Matrix</Name><Type>Matrix</Type><BitSize>64</BitSize></Object></Objects>";
+        write(edgeSource,document("","1","<Profile><Dictionary>"+multiArray+"</Dictionary></Profile>"));check(edgeCatalog.reload().ok,"Unsupported multidimensional arrays do not hide the device description");
+        auto edgeView=snapshot({},0,0);edgeCatalog.decorate(edgeView);
+        check(edgeView.slaves[0].esiSdoDictionary&&!edgeView.slaves[0].esiSdoDictionary->complete&&edgeView.slaves[0].esiSdoDictionary->objects[0].entries.empty(),"Unsupported array shape is partial and never invents SDO addresses");
+        const std::string duplicateObject="<Objects><Object><Index>#x2000</Index><Type>UINT</Type><BitSize>16</BitSize></Object><Object><Index>#x2000</Index><Type>UDINT</Type><BitSize>32</BitSize></Object></Objects>";
+        const std::string cyclicType="<DataTypes><DataType><Name>A</Name><BaseType>B</BaseType></DataType><DataType><Name>B</Name><BaseType>A</BaseType></DataType></DataTypes><Objects><Object><Index>#x2000</Index><Type>A</Type></Object></Objects>";
+        const std::string duplicateSub="<DataTypes><DataType><Name>R</Name><SubItem><SubIdx>1</SubIdx><Type>UINT</Type><BitSize>16</BitSize></SubItem><SubItem><SubIdx>1</SubIdx><Type>UINT</Type><BitSize>16</BitSize></SubItem></DataType></DataTypes><Objects><Object><Index>#x2000</Index><Type>R</Type></Object></Objects>";
+        for(const auto& bad:std::vector<std::string>{duplicateObject,cyclicType,duplicateSub}) {
+            write(edgeSource,document("","1","<Profile><Dictionary>"+bad+"</Dictionary></Profile>"));
+            check(!edgeCatalog.reload().ok,"Duplicate object/subindex or cyclic alias is rejected instead of choosing arbitrary dictionary metadata");
+        }
+
         const auto invalidLib=temp.directory/"invalid";
         const auto invalid=invalidLib/"invalid.xml";const auto valid=invalidLib/"valid.xml";
         write(invalid,"<EtherCATInfo>");write(valid,document(""));
@@ -137,6 +205,7 @@ int main() {
         check(hardwareView.esiFiles>=2&&hardwareView.slaves[0].esiStatus=="ESI matched"&&hardwareView.slaves[1].esiStatus=="ESI matched","User ESI files match both physical device identities");
         check(hardwareView.slaves[0].pdoEntries[0].type=="UINT8"&&pdoEntryName(hardwareView.slaves[0].pdoEntries[0],true)=="Output","AX58100 BITARR8 and nonstandard RxPDO index parsed");
         check(pdoEntryName(hardwareView.slaves[1].pdoEntries[1],false)=="Input"&&hardwareView.slaves[1].pdoEntries[1].type=="UINT8","LAN9252 BITARR8 and nonstandard TxPDO index parsed");
+        check(!hardwareView.slaves[0].esiSdoDictionary&&!hardwareView.slaves[1].esiSdoDictionary,"PDO-only manufacturer ESI files do not invent SDO dictionaries");
 #endif
         std::cout<<checks<<" ESI checks passed.\n";return 0;
     }catch(const std::exception& e){std::cerr<<"ESI check failed: "<<e.what()<<'\n';return 1;}

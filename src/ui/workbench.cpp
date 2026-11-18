@@ -125,6 +125,10 @@ void consume(const Snapshot& s) {
         if(selectionGeneration!=s.generation) {
             selectionGeneration=s.generation;
             ui.selected=s.slaves.front().position;
+            if(ui.requestedSlave>0) {
+                for(const auto& slave:s.slaves)if(slave.position==ui.requestedSlave){ui.selected=slave.position;break;}
+                ui.requestedSlave=0;
+            }
         } else if(!selected(s))ui.selected=s.slaves.front().position;
     }
     const auto validAdapter=[&](const std::string& name){return std::any_of(s.adapters.begin(),s.adapters.end(),[&](const Adapter& a){return a.name==name;});};
@@ -219,7 +223,7 @@ void configureWorkbench(const char* language,const char* tab,int slave) {
         ui.chinese=std::strcmp(language,"zh-CN")==0;ui.languageOverride=true;
     }
     if(tab)ui.requestedTab=tab;
-    if(slave>0)ui.selected=slave;
+    if(slave>0){ui.selected=slave;ui.requestedSlave=slave;}
 }
 void configureWorkbenchSource(bool simulation) { ui.config.simulation=simulation; }
 }

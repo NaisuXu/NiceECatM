@@ -100,7 +100,7 @@ Background AL-state monitoring distinguishes an unreadable `NONE` result from a 
 
 - **BufferPDO:** signals for the selected slave, direct output editing and a 20-second trend window. Input fields are read-only. Cached/stopped data retains its previous trend.
 - **ESC registers:** physical ESC offset and byte data. Writes are limited by the implemented register rules and current state.
-- **CoE / SDO:** manual Index/SubIndex reads and writes. Reference rows are address shortcuts, not an automatically discovered object dictionary.
+- **CoE / SDO:** searchable object dictionary with always-visible subindices, descriptions, data types, bit lengths, access flags, source and explicitly read values. Group headers use a tinted background; their entries are indented, with no collapse controls. Matching ESI descriptions are available without mailbox requests. Entering this page in confirmed PRE-OP discovers online descriptions once when SDO Information is declared and no script is running; Refresh dictionary retries explicitly. Online metadata takes priority and ESI supplements missing descriptions. Discovery is bounded, may be partial, and never reads all values or changes AL state. Manual Index/SubIndex access remains available. Unknown encodings use raw bytes.
 - **Mailbox:** device protocol declarations and current service availability. A declaration does not mean a protocol service is implemented.
 - **Device / DC:** device identity, mapped layout information and declared capabilities. DC trigger configuration/readback is not connected.
 - **Diagnostics:** WKC, host timing, bus context and a 200-sample deviation history.

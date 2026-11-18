@@ -106,6 +106,20 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"Stop cyclic exchange before synchronous SDO access in this build","此版本同步访问 SDO 前需停止周期交换"},
     {"SDO receive capacity must be 1..65536 bytes","SDO 接收容量须为 1…65536 字节"},
     {"Slave does not declare CoE support","从站未声明 CoE 支持"},
+    {"Stop cyclic exchange before reading the SDO dictionary.","读取 SDO 对象字典前请先停止周期交换。"},
+    {"Online SDO dictionary discovery requires confirmed PRE-OP.","读取在线 SDO 对象字典需要确认的 PRE-OP 状态。"},
+    {"Slave does not declare SDO Information support.","从站未声明支持 SDO Information。"},
+    {"Cannot confirm the selected slave's AL state for dictionary discovery.","无法确认所选从站的 AL 状态，不能读取对象字典。"},
+    {"Online SDO dictionary discovery is unavailable.","在线 SDO 对象字典读取尚不可用。"},
+    {"Online dictionary result expired; refresh to try again.","在线字典读取结果已过期，请刷新重试。"},
+    {"Discovery budget reached; refresh to retry.","已达到字典读取时间或请求数限制，请刷新重试。"},
+    {"SDO Information request failed or timed out.","SDO Information 请求失败或超时。"},
+    {"Object list exceeds the master capacity.","对象列表超出主站容量。"},
+    {"Object count limit reached.","已达到对象数量限制。"},
+    {"Invalid or duplicate object index.","对象索引无效或重复。"},
+    {"Unsupported object description code.","不支持的对象描述类别。"},
+    {"Object has no available entry descriptions.","对象没有可用的条目描述。"},
+    {"Discovery stopped before all objects were described.","尚未完成全部对象描述，字典读取已停止。"},
     {"SDO requires confirmed PRE-OP, SAFE-OP or OP","SDO 需要确认的 PRE-OP、SAFE-OP 或 OP 状态"},
     {"SDO read failed or timed out","SDO 读取失败或超时"},
     {"SDO response length exceeds the requested buffer","SDO 响应长度超出请求的缓冲区"},
@@ -207,6 +221,18 @@ inline std::string translateToolMessage(const std::string& message) {
     const auto plain=withoutPeriod(message);
     static const auto exact=[](){std::unordered_map<std::string,std::string> result;for(const auto& entry:messageTranslations)result[withoutPeriod(entry.first)]=entry.second;return result;}();
     if(const auto entry=exact.find(plain);entry!=exact.end())return entry->second;
+    for(const auto* prefix:{"Online SDO dictionary complete: ","Online SDO dictionary incomplete: "}) {
+        const std::string start=prefix;if(message.rfind(start,0)!=0)continue;
+        const auto objectsEnd=message.find(" objects, ",start.size());
+        const auto entriesEnd=message.find(" entries.",objectsEnd);
+        if(objectsEnd!=std::string::npos&&entriesEnd!=std::string::npos) {
+            std::string value=std::string(start=="Online SDO dictionary complete: "?"在线 SDO 字典已读取：":"在线 SDO 字典读取不完整：")+
+                message.substr(start.size(),objectsEnd-start.size())+" 个对象，"+message.substr(objectsEnd+10,entriesEnd-objectsEnd-10)+" 个条目。";
+            const auto reasonStart=entriesEnd+9;
+            if(reasonStart<message.size())value+=" "+translateToolMessage(message.substr(reasonStart+(message[reasonStart]==' '?1:0)));
+            return value;
+        }
+    }
     if(message.rfind("IN: ",0)==0||message.rfind("OUT: ",0)==0) {
         const bool input=message.rfind("IN: ",0)==0;const size_t start=input?4:5;
         const auto next=message.find(input?" OUT: ":" IN: ",start);

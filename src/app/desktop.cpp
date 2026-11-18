@@ -83,6 +83,22 @@ int runDesktop(int argc,char**argv) {
       ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(),renderer);
       ++frame;
       if(frames>0&&frame>=frames&&(!smokeCyclic||cyclicSamples>=3||frame>=frames+300)){
+        if(smoke&&!smokeCyclic&&tab=="sdo"&&device==4) {
+          const auto snapshot=controller.snapshot();
+          if(snapshot.slaves.size()<4||!snapshot.slaves[3].sdoDictionary||!snapshot.slaves[3].sdoDictionary->complete||snapshot.slaves[3].sdoDictionary->objects.size()!=4) {
+            std::cerr<<"SDO UI smoke did not discover the simulation dictionary.\n";exitCode=1;
+          }
+          int checked=0;
+          for(const auto* child:ImGui::GetCurrentContext()->Windows) {
+            const char* leaf=std::strrchr(child->Name,'/');leaf=leaf?leaf+1:child->Name;
+            if(!child->Active||(std::strncmp(leaf,"sdo-page_",9)&&std::strncmp(leaf,"sdo-object-dictionary_",22)))continue;
+            ++checked;
+            if(child->ScrollMax.x>0.5f||child->ScrollMax.y>0.5f) {
+              std::cerr<<"SDO dictionary layout overflow: "<<child->Name<<" ("<<child->ScrollMax.x<<", "<<child->ScrollMax.y<<")\n";exitCode=1;
+            }
+          }
+          if(checked!=2){std::cerr<<"SDO dictionary layout check did not find both windows.\n";exitCode=1;}
+        }
         if(smokeCyclic) {
           const auto snapshot=controller.snapshot();
           if(!snapshot.simulation||!snapshot.running||cyclicSamples<3) {

@@ -55,6 +55,7 @@ public:
     Result writeRegister(int slave,uint16_t offset,const std::vector<uint8_t>& b) override {return simulation_->writeRegister(slave,offset,b);}
     Result readSdo(int slave,uint16_t index,uint8_t sub,int size) override {return simulation_->readSdo(slave,index,sub,size);}
     Result writeSdo(int slave,uint16_t index,uint8_t sub,const std::vector<uint8_t>& b) override {return simulation_->writeSdo(slave,index,sub,b);}
+    Result readSdoDictionary(int slave) override {return simulation_->readSdoDictionary(slave);}
     Result writeOutput(int slave,int offset,const std::vector<uint8_t>& b) override {return simulation_->writeOutput(slave,offset,b);}
     void cycle() override {simulation_->cycle();++observedCycles;}
     void close() override {simulation_->close();}
@@ -89,11 +90,17 @@ int main() {
         Command output;output.kind=CommandKind::WriteOutput;output.slave=5;output.offset=0;output.data={0xaa};output.generation=oldGeneration;
         view=send(output);check(!view.result.ok&&view.slaves[4].outputs[0]==0,"Old output command rejected after rescan");
         output.generation=0;view=send(output);check(view.result.ok&&view.slaves[4].outputs[0]==0xaa,"Current output command applied directly");
+        Command dictionary;dictionary.kind=CommandKind::ReadSdoDictionary;dictionary.slave=4;
+        const auto dictionaryGeneration=view.generation;
+        view=send(dictionary);check(view.result.ok&&view.slaves[3].sdoDictionary&&view.slaves[3].sdoDictionary->complete,"PRE-OP dictionary command publishes immutable metadata");
+        check(view.generation==dictionaryGeneration&&!view.running&&view.cycles==0,"Dictionary discovery does not reconnect, change state or start I/O");
+        dictionary.generation=oldGeneration;view=send(dictionary);check(!view.result.ok,"Stale dictionary command is rejected");dictionary.generation=0;
         Command state;state.kind=CommandKind::State;state.state=AlState::Op;
         view=send(state);check(view.result.ok&&view.running,"OP starts cyclic owner");
         check(waitFor([&]{return controller.snapshot().cycles>2;}),"Cyclic process exchange advances independently of GUI");
         Command sdo;sdo.kind=CommandKind::ReadSdo;sdo.slave=4;sdo.index=0x1000;sdo.length=4;
         view=send(sdo);check(!view.result.ok&&view.running,"Synchronous Mailbox access cannot stall PDO cycles");
+        view=send(dictionary);check(!view.result.ok&&view.running,"Dictionary discovery cannot interrupt active cyclic I/O");
         state.state=AlState::PreOp;view=send(state);check(view.result.ok&&!view.running&&view.slaves[4].state==2,"Lower-state request stops cycles first");
         check(view.slaves[4].outputs[0]==0xaa,"State control preserves output image");
 
@@ -143,6 +150,7 @@ int main() {
         Command read;read.kind=CommandKind::ReadRegister;read.slave=1;read.address=0x130;read.length=2;
         const auto blockingId=controller.submit(read);check(blockingId!=0,"Blocking test read queued");
         check(waitFor([]{std::lock_guard<std::mutex> lock(gateMutex);return entered;}),"Backend is in bounded operation");
+        check(controller.pending(blockingId)&&!controller.pending(0),"Pending query identifies executing requests without relying on last completion order");
         const auto busyStart=std::chrono::steady_clock::now();view=controller.snapshot();
         check(view.busy&&std::chrono::steady_clock::now()-busyStart<std::chrono::milliseconds(30),"Snapshot remains responsive during network wait");
         std::vector<uint64_t> queued;
@@ -150,11 +158,13 @@ int main() {
         check(controller.submit(output)==0,"Normal queue overflow explicitly rejected");
         Command stop;stop.kind=CommandKind::Stop;const auto stopId=controller.submit(stop);
         check(stopId!=0,"Reserved capacity accepts priority Stop under full normal queue");
+        check(controller.pending(stopId)&&controller.pending(queued.front()),"Pending query covers both priority and normal queues");
         Command disconnect;disconnect.kind=CommandKind::Disconnect;const auto disconnectId=controller.submit(disconnect);
         check(disconnectId!=0,"Reserved capacity accepts priority Disconnect");
         {std::lock_guard<std::mutex> lock(gateMutex);released=true;}gate.notify_all();
         check(waitFor([&]{auto s=controller.snapshot();return !s.connected&&s.completed==queued.back()&&!s.busy;}),"Disconnect runs first and queued previous-session commands drain as rejected");
         view=controller.snapshot();check(view.slaves.empty()&&view.generation>scan.generation,"Disconnected snapshot contains no stale device data");
+        check(!controller.pending(blockingId)&&!controller.pending(stopId)&&!controller.pending(queued.back()),"Completed and drained requests are no longer pending");
         check(view.logs.size()<=500&&view.logs.size()>120,"Bounded command result history retained");
         {
             auto quitting=std::make_unique<Controller>();

@@ -1,8 +1,12 @@
-# ESI 描述与信号名称
+# ESI 描述、信号名称与对象字典
 
 [English](esi.md) | **简体中文** | [使用指南](../README.zh-CN.md)
 
 NiceECatM 将本地 EtherCAT Slave Information XML 与在线发现的 PDO 布局结合。ESI 补充名称和标量类型，过程值来自实际映射的 SOEM 映像。
+
+匹配的 ESI 包含 `Profile/Dictionary/Objects` 时，CoE · SDO 页面还会显示其对象字典。字典独立于 PDO 布局：没有 PDO 映射的配置、诊断对象也能显示。支持标量、记录子项和常见一维数组，可取得索引、子索引、名称、类型、位长及声明的访问权限。无法展开的数组明确标记为部分字典，不会仅凭 PDO 条目推测 SDO 地址。
+
+ESI 是离线描述，不代表所连接固件一定实现相应对象或 CoE 访问，XML 中的默认值也不会作为当前读数显示。在线 SDO Information 可提供实际对象描述；对象当前值仍需明确执行 SDO 读取。离线信息用于补充在线描述，下次启动时匹配文件不存在便不再显示其离线字典。
 
 ## 使用
 
@@ -10,8 +14,11 @@ NiceECatM 将本地 EtherCAT Slave Information XML 与在线发现的 PDO 布局
 2. 重启应用，使 ESI 目录按当前文件重新加载。
 3. 扫描目标网卡，在拓扑中选择一个从站。
 4. 查看 BufferPDO；信号详情显示匹配的 ESI 文件名。
+5. 对于 CoE 从站，可在 CoE · SDO 页查看字典，点击条目自动填写右侧参数编辑器。在线发现需要从站支持 SDO Information，并处于 PRE-OP 且周期交换已停止；周期运行中使用此前加载的描述。
 
 身份匹配依据 Vendor ID、Product Code 和 Revision。发布包的 `esi/` 中已包含 ASIX AX58100 和 Microchip LAN9252 测试设备的厂商 XML 文件。
+
+附带的 AX58100、LAN9252 XML 只有 PDO 定义，没有 SDO 对象字典。要填充字典列表，需要包含字典的 ESI，或者支持在线 SDO Information 的从站。支持普通 SDO 读写并不保证可以枚举对象字典。
 
 移除某个文件后，下次启动不再加载它的 ESI 描述。但从站的 SII 字符串或 CoE SDO Info 仍可能独立提供信号名，因此仅凭信号有名称，不能判断某个 ESI 文件仍在加载。
 
@@ -29,4 +36,4 @@ ESI 条目需要匹配方向、PDO/对象标识、子索引、位宽及兼容的
 
 ESI 用于显示元数据，不执行 ESI 初始化、启动命令、PDO 重映射或模块插槽配置。寄存器或对象写入使映射失效后，需要重新扫描，才能恢复类型化 PDO 访问和周期交换。
 
-发现流程有界且只在扫描阶段执行，不进入周期循环。CLI 扫描 JSON 包含 ESI 目录和数量、逐站匹配结果及 `pdoEntries`。XML 解析已嵌入，无需额外 XML 运行时。
+PDO 发现在扫描阶段执行；在线对象字典在 PRE-OP 且周期交换停止时单独读取，流程有界，两者都不进入周期循环。CLI 扫描 JSON 包含 ESI 目录和数量、逐站匹配结果及 `pdoEntries`。XML 解析已嵌入，无需额外 XML 运行时。

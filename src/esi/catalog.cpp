@@ -23,6 +23,7 @@ struct DeviceDescription {
     uint32_t vendor=0,product=0,revision=0;
     std::string file;
     std::vector<PdoEntry> entries;
+    std::shared_ptr<const SdoDictionary> sdo;
 };
 std::string trim(std::string text) {
     const auto start=text.find_first_not_of(" \t\r\n");
@@ -58,9 +59,9 @@ uint32_t number(const std::string& value,uint32_t maximum,const char* label) {
     if(s.empty())throw std::runtime_error(std::string("Missing ESI ")+label);
     return static_cast<uint32_t>(result);
 }
-std::vector<LocalizedText> names(const Element* parent) {
+std::vector<LocalizedText> names(const Element* parent,const char* tag="Name") {
     std::vector<LocalizedText> result;
-    if(parent)for(auto* n=parent->FirstChildElement();n;n=n->NextSiblingElement())if(named(n,"Name")) {
+    if(parent)for(auto* n=parent->FirstChildElement();n;n=n->NextSiblingElement())if(named(n,tag)) {
         auto value=text(n);if(value.empty())continue;
         if(value.size()>4096)throw std::runtime_error("ESI name exceeds 4096 bytes");
         uint32_t lcid=0;if(const char* attr=n->Attribute("LcId"))lcid=number(attr,65535,"name language");
@@ -122,7 +123,8 @@ const Element* dictionary(const Element* device) {return child(child(device,"Pro
 TypeMap dictionaryTypes(const Element* device) {
     TypeMap result;const auto* parent=child(dictionary(device),"DataTypes");
     if(parent)for(auto* node=parent->FirstChildElement();node;node=node->NextSiblingElement())if(named(node,"DataType")) {
-        const auto name=text(node,"Name");if(!name.empty())result.emplace(name,node);
+        const auto name=text(node,"Name");
+        if(!name.empty()&&!result.emplace(name,node).second)throw std::runtime_error("Duplicate ESI dictionary data type");
     }
     return result;
 }
@@ -151,6 +153,136 @@ void dictionaryEntry(const Element* device,const TypeMap& types,PdoEntry& entry)
     if(entry.names.empty())entry.names=names(description);
     if(entry.type.empty())entry.type=resolveType(text(description,"Type"),entry.bitLength,types);
 }
+std::vector<LocalizedText> descriptionNames(const Element* node) {
+    auto value=names(node,"DisplayName");return value.empty()?names(node):value;
+}
+const Element* compositeType(const std::string& type,const TypeMap& types,unsigned depth=0) {
+    const auto found=types.find(type);if(found==types.end())return nullptr;
+    if(depth>=16)throw std::runtime_error("Cyclic or excessively nested ESI dictionary type");
+    const auto* node=found->second;
+    if(child(node,"SubItem")||child(node,"ArrayInfo"))return node;
+    const auto base=text(node,"BaseType");return base.empty()?nullptr:compositeType(base,types,depth+1);
+}
+unsigned typeBits(const std::string& type,const TypeMap& types,unsigned depth=0) {
+    if(depth>=16)throw std::runtime_error("Cyclic or excessively nested ESI dictionary type");
+    const auto found=types.find(type);
+    if(found!=types.end()) {
+        const auto bits=text(found->second,"BitSize");
+        if(!bits.empty())return number(bits,MaxDirectionBits,"dictionary type bit size");
+        const auto base=text(found->second,"BaseType");if(!base.empty())return typeBits(base,types,depth+1);
+    }
+    const auto value=lower(type);
+    if(value=="bool"||value=="bit")return 1;
+    if(value=="sint"||value=="usint"||value=="byte")return 8;
+    if(value=="int"||value=="uint"||value=="word")return 16;
+    if(value=="dint"||value=="udint"||value=="dword"||value=="real")return 32;
+    if(value=="lint"||value=="ulint"||value=="lword"||value=="lreal")return 64;
+    for(const auto* prefix:{"uint","int","bitarr","bit","real"}) {
+        const std::string tag=prefix;
+        if(value.compare(0,tag.size(),tag)==0) {
+            const auto width=value.substr(tag.size());
+            if(!width.empty()&&width.size()<=2&&std::all_of(width.begin(),width.end(),[](char c){return c>='0'&&c<='9';}))return number(width,64,"dictionary scalar width");
+        }
+    }
+    if(value.compare(0,7,"string(")==0&&value.back()==')')return number(value.substr(7,value.size()-8),MaxDirectionBits/8,"dictionary string length")*8;
+    return 0;
+}
+std::string sdoScalar(const std::string& type,unsigned bits,const TypeMap& types,unsigned depth=0) {
+    if(auto value=pdoType(type,bits);!value.empty())return value;
+    const auto value=lower(type);
+    if(value=="string"||value=="visible_string"||value.compare(0,7,"string(")==0)return "STRING";
+    const auto found=types.find(type);
+    if(found!=types.end()&&!child(found->second,"SubItem")&&!child(found->second,"ArrayInfo")) {
+        if(depth>=16)throw std::runtime_error("Cyclic or excessively nested ESI dictionary type");
+        const auto base=text(found->second,"BaseType");
+        if(!base.empty())return sdoScalar(base,bits,types,depth+1);
+    }
+    return type; // Unsupported scalar or complex entries remain explicitly raw.
+}
+uint16_t scalarCode(const std::string& type,unsigned bits) {
+    if(type=="STRING")return 0x0009;
+    for(uint16_t code=1;code<=0x37;++code)if(!type.empty()&&pdoType(code,bits)==type)return code;
+    return 0;
+}
+unsigned accessStates(const char* attribute,bool& valid) {
+    if(!attribute)return 7;
+    const auto value=lower(attribute);
+    if(value=="preop")return 1;
+    if(value=="preop_safeop")return 3;
+    if(value=="preop_op")return 5;
+    if(value=="safeop")return 2;
+    if(value=="safeop_op")return 6;
+    if(value=="op")return 4;
+    valid=false;return 0;
+}
+void sdoAccess(const Element* description,const Element* object,SdoEntry& entry) {
+    auto* access=child(child(description,"Flags"),"Access");
+    if(!access)access=child(child(object,"Flags"),"Access");
+    if(!access)return;
+    const auto value=lower(text(access));if(value!="ro"&&value!="rw"&&value!="wo")return;
+    bool valid=true;
+    const auto read=accessStates(access->Attribute("ReadRestrictions"),valid);
+    const auto write=accessStates(access->Attribute("WriteRestrictions"),valid);
+    if(!valid)return;
+    entry.accessKnown=true;entry.access=uint16_t((value!="wo"?read:0)|(value!="ro"?write<<3:0));
+}
+std::shared_ptr<const SdoDictionary> sdoDictionary(const Element* device,const TypeMap& types,size_t& total) {
+    const auto* parent=child(dictionary(device),"Objects");if(!parent)return {};
+    auto result=std::make_shared<SdoDictionary>();result->complete=true;
+    std::map<uint16_t,SdoObject> objects;
+    for(auto* node=parent->FirstChildElement();node;node=node->NextSiblingElement())if(named(node,"Object")) {
+        SdoObject object;object.index=uint16_t(number(text(node,"Index"),65535,"dictionary index"));object.esi=true;object.names=descriptionNames(node);
+        if(objects.count(object.index))throw std::runtime_error("Duplicate ESI dictionary object index");
+        const auto add=[&](const Element* description,unsigned sub,const std::string& type,unsigned bits,bool array) {
+            if(++total>MaxEntries)throw std::runtime_error("Too many ESI dictionary entries");
+            SdoEntry entry;entry.subindex=uint8_t(sub);entry.esi=true;entry.bitLength=bits;entry.type=sdoScalar(type,bits,types);entry.dataType=scalarCode(entry.type,bits);
+            entry.names=descriptionNames(description);sdoAccess(description,node,entry);
+            if(array)for(auto& name:entry.names)name.text+=" ["+std::to_string(sub)+"]";
+            if(std::any_of(object.entries.begin(),object.entries.end(),[&](const SdoEntry& prior){return prior.subindex==entry.subindex;}))throw std::runtime_error("Duplicate ESI dictionary subindex");
+            object.maxSubindex=std::max(object.maxSubindex,entry.subindex);object.entries.push_back(std::move(entry));
+        };
+        const auto array=[&](const Element* definition,const Element* description) {
+            const auto* info=child(definition,"ArrayInfo");
+            if(!info)return false;
+            unsigned dimensions=0;for(auto* item=definition->FirstChildElement();item;item=item->NextSiblingElement())if(named(item,"ArrayInfo"))++dimensions;
+            const auto bound=text(info,"LBound"),count=text(info,"Elements"),base=text(definition,"BaseType");
+            if(dimensions!=1||bound.empty()||bound[0]=='-'||base.empty())return false;
+            const auto first=number(bound,255,"dictionary array bound"),length=number(count,256,"dictionary array length");
+            if(!length||length>256-first)return false;
+            const auto declared=text(definition,"BitSize");
+            const auto totalBits=declared.empty()?0:number(declared,MaxDirectionBits,"dictionary array bit size");
+            if(totalBits&&totalBits%length)return false;
+            const auto bits=totalBits?totalBits/length:typeBits(base,types);
+            if(compositeType(base,types))return false;
+            for(unsigned offset=0;offset<length;++offset)add(description,first+offset,base,bits,true);
+            return true;
+        };
+        const auto type=text(node,"Type");const auto* definition=compositeType(type,types);
+        if(definition&&child(definition,"SubItem")) {
+            object.objectCode=9;
+            for(auto* sub=definition->FirstChildElement();sub;sub=sub->NextSiblingElement())if(named(sub,"SubItem")) {
+                const auto subType=text(sub,"Type"),subIndex=text(sub,"SubIdx");const auto* shape=compositeType(subType,types);
+                if(shape&&child(shape,"ArrayInfo")) {
+                    if(!array(shape,sub))result->complete=false;
+                } else if(!subIndex.empty()) {
+                    const auto bits=text(sub,"BitSize");
+                    add(sub,number(subIndex,255,"dictionary subindex"),subType,bits.empty()?typeBits(subType,types):number(bits,MaxDirectionBits,"dictionary entry bit size"),false);
+                } else result->complete=false; // Padding/unnumbered fields are not SDO addresses.
+            }
+        } else if(definition&&child(definition,"ArrayInfo")) {
+            object.objectCode=8;if(!array(definition,node))result->complete=false;
+        } else {
+            object.objectCode=7;const auto bits=text(node,"BitSize");
+            add(node,0,type,bits.empty()?typeBits(type,types):number(bits,MaxDirectionBits,"dictionary entry bit size"),false);
+        }
+        std::sort(object.entries.begin(),object.entries.end(),[](const SdoEntry& a,const SdoEntry& b){return a.subindex<b.subindex;});
+        objects.emplace(object.index,std::move(object));
+        if(objects.size()>65536)throw std::runtime_error("Too many ESI dictionary objects");
+    }
+    for(auto& item:objects)result->objects.push_back(std::move(item.second));
+    result->status=result->complete?"ESI object dictionary":"ESI object dictionary (partial)";
+    return result;
+}
 std::vector<DeviceDescription> parseFile(const std::string& data,const fs::path& file) {
     auto utf8=xmlUtf8(data);tinyxml2::XMLDocument xml;
     if(xml.Parse(utf8.data(),utf8.size())!=tinyxml2::XML_SUCCESS)throw std::runtime_error("Malformed ESI XML: "+file.filename().u8string()+" (line "+std::to_string(xml.ErrorLineNum())+")");
@@ -158,7 +290,7 @@ std::vector<DeviceDescription> parseFile(const std::string& data,const fs::path&
     const auto* root=xml.RootElement();if(!named(root,"EtherCATInfo")||root->NextSiblingElement())throw std::runtime_error("Not an EtherCAT ESI file: "+file.filename().u8string());
     const auto vendor=number(text(child(root,"Vendor"),"Id"),std::numeric_limits<uint32_t>::max(),"Vendor ID");
     const auto* devices=child(child(root,"Descriptions"),"Devices");if(!devices)throw std::runtime_error("Missing ESI device descriptions");
-    std::vector<DeviceDescription> result;size_t entryCount=0;
+    std::vector<DeviceDescription> result;size_t entryCount=0,dictionaryCount=0;
     for(auto* node=devices->FirstChildElement();node;node=node->NextSiblingElement())if(named(node,"Device")) {
         if(result.size()>=MaxDevices)throw std::runtime_error("Too many ESI device descriptions");
         DeviceDescription device;device.vendor=vendor;device.file=file.u8string();const auto* identity=child(node,"Type");
@@ -166,6 +298,7 @@ std::vector<DeviceDescription> parseFile(const std::string& data,const fs::path&
         device.product=number(identity->Attribute("ProductCode"),std::numeric_limits<uint32_t>::max(),"ProductCode");
         device.revision=identity->Attribute("RevisionNo")?number(identity->Attribute("RevisionNo"),std::numeric_limits<uint32_t>::max(),"RevisionNo"):0;
         const auto types=dictionaryTypes(node);unsigned offsets[2]={0,0};
+        device.sdo=sdoDictionary(node,types,dictionaryCount);
         for(auto* pdo=node->FirstChildElement();pdo;pdo=pdo->NextSiblingElement()) {
             const bool input=named(pdo,"TxPdo");if(!input&&!named(pdo,"RxPdo"))continue;
             const auto pdoIndex=number(text(pdo,"Index"),65535,"PDO index");
@@ -198,8 +331,21 @@ bool sameNames(const std::vector<LocalizedText>& a,const std::vector<LocalizedTe
 bool sameEntry(const PdoEntry& a,const PdoEntry& b) {
     return a.input==b.input&&a.padding==b.padding&&a.pdoIndex==b.pdoIndex&&a.index==b.index&&a.subindex==b.subindex&&a.bitLength==b.bitLength&&a.syncManager==b.syncManager&&a.type==b.type&&sameNames(a.names,b.names);
 }
+bool sameSdo(const std::shared_ptr<const SdoDictionary>& a,const std::shared_ptr<const SdoDictionary>& b) {
+    if(!a||!b)return !a&&!b;
+    if(a->complete!=b->complete||a->objects.size()!=b->objects.size())return false;
+    for(size_t n=0;n<a->objects.size();++n) {
+        const auto& x=a->objects[n];const auto& y=b->objects[n];
+        if(x.index!=y.index||x.objectCode!=y.objectCode||x.maxSubindex!=y.maxSubindex||!sameNames(x.names,y.names)||x.entries.size()!=y.entries.size())return false;
+        for(size_t i=0;i<x.entries.size();++i) {
+            const auto& p=x.entries[i];const auto& q=y.entries[i];
+            if(p.subindex!=q.subindex||p.dataType!=q.dataType||p.access!=q.access||p.accessKnown!=q.accessKnown||p.bitLength!=q.bitLength||p.type!=q.type||!sameNames(p.names,q.names))return false;
+        }
+    }
+    return true;
+}
 bool sameDevice(const DeviceDescription& a,const DeviceDescription& b) {
-    if(a.entries.size()!=b.entries.size())return false;
+    if(a.entries.size()!=b.entries.size()||!sameSdo(a.sdo,b.sdo))return false;
     for(size_t n=0;n<a.entries.size();++n)if(!sameEntry(a.entries[n],b.entries[n]))return false;
     return true;
 }
@@ -259,7 +405,7 @@ Result EsiCatalog::reload() {
 void EsiCatalog::decorate(Snapshot& view) const {
     view.esiDirectory=impl_->directory.u8string();view.esiFiles=impl_->files;view.esiDevices=impl_->devices.size();view.esiStatus=impl_->status;view.descriptionRevision=impl_->revision;
     for(auto& slave:view.slaves) {
-        slave.esiFile.clear();slave.esiStatus="No matching ESI description";
+        slave.esiFile.clear();slave.esiSdoDictionary.reset();slave.esiStatus="No matching ESI description";
         if(view.simulation){slave.esiStatus="Simulation fixture";continue;}
         const DeviceDescription* exact=nullptr;bool family=false,ambiguous=false;
         for(const auto& candidate:impl_->devices)if(candidate.vendor==slave.vendor&&candidate.product==slave.product) {
@@ -269,6 +415,7 @@ void EsiCatalog::decorate(Snapshot& view) const {
         if(ambiguous){slave.esiStatus="Ambiguous ESI device identity";continue;}
         if(!exact){if(family)slave.esiStatus="ESI revision mismatch";continue;}
         slave.esiFile=exact->file;
+        slave.esiSdoDictionary=exact->sdo;
         const bool verified[2]={verifiedDirection(slave,false),verifiedDirection(slave,true)};
         size_t matched=0,missing=0;bool unavailable=false;
         for(bool input:{false,true})if((input?slave.inputBits:slave.outputBits)&&!verified[input])unavailable=true;

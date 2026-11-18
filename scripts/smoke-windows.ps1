@@ -53,6 +53,9 @@ try {
             $historyCapture = Join-Path $smokeRoot "$language-diagnostics-running-$($size[0])x$($size[1]).bmp"
             & $app --ui-smoke-cyclic --language $language --tab diagnostics --width $size[0] --height $size[1] --frames 60 --screenshot $historyCapture
             if ($LASTEXITCODE -ne 0) { throw "Running diagnostics smoke failed: $language / $size" }
+            $dictionaryCapture = Join-Path $smokeRoot "$language-sdo-populated-$($size[0])x$($size[1]).bmp"
+            & $app --ui-smoke --language $language --tab sdo --device 4 --width $size[0] --height $size[1] --frames 40 --screenshot $dictionaryCapture
+            if ($LASTEXITCODE -ne 0) { throw "Populated SDO dictionary smoke failed: $language / $size" }
         }
     }
     $simulation = (& $app --simulate --scan | ConvertFrom-Json)
@@ -62,7 +65,7 @@ try {
     if ($LASTEXITCODE -ne 1 -or $missingDriver.ok) { throw 'Missing driver did not produce an explicit failure.' }
     & $app --ui-smoke --frames 25 --screenshot (Join-Path $smokeRoot 'no-driver.bmp')
     if ($LASTEXITCODE -ne 0) { throw 'GUI failed without a capture driver.' }
-    Write-Output '14 bilingual page captures, 6 window-size captures, 6 populated diagnostics layout checks, simulation scan and missing-driver checks passed. No hardware scan performed.'
+    Write-Output '14 bilingual page captures, 6 window-size captures, 6 populated diagnostics and 6 populated SDO dictionary layout checks, simulation scan and missing-driver checks passed. No hardware scan performed.'
 } finally {
     $env:SDL_VIDEODRIVER = $oldVideo
     $env:SDL_RENDER_DRIVER = $oldRenderer

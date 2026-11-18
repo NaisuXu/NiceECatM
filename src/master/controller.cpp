@@ -97,6 +97,7 @@ struct Controller::Impl {
     std::thread worker;
     bool quitting=false;
     uint64_t nextId=1,generation=1,lastCompleted=0,logSequence=0;
+    uint64_t activeRequest=0;
     Snapshot published,current,scriptPublished;
     std::atomic<bool> scriptSnapshots{false};
     Result lastResult;
@@ -107,6 +108,7 @@ struct Controller::Impl {
     struct Description {
         std::vector<PdoEntry> entries;
         std::string file,status;
+        std::shared_ptr<const SdoDictionary> dictionary;
     };
     std::vector<Description> descriptions;
     Snapshot library;
@@ -170,7 +172,7 @@ struct Controller::Impl {
         if(descriptionDirty||descriptionGeneration!=generation||descriptionMapped!=current.mapped||descriptions.size()!=current.slaves.size()) {
             esi.decorate(current);
             descriptions.clear();descriptions.reserve(current.slaves.size());
-            for(const auto& slave:current.slaves)descriptions.push_back({slave.pdoEntries,slave.esiFile,slave.esiStatus});
+            for(const auto& slave:current.slaves)descriptions.push_back({slave.pdoEntries,slave.esiFile,slave.esiStatus,slave.esiSdoDictionary});
             library.esiDirectory=current.esiDirectory;library.esiStatus=current.esiStatus;
             library.esiFiles=current.esiFiles;library.esiDevices=current.esiDevices;library.descriptionRevision=current.descriptionRevision;
             descriptionDirty=false;descriptionGeneration=generation;descriptionMapped=current.mapped;
@@ -180,6 +182,7 @@ struct Controller::Impl {
             for(size_t n=0;n<current.slaves.size();++n) {
                 current.slaves[n].pdoEntries=descriptions[n].entries;
                 current.slaves[n].esiFile=descriptions[n].file;current.slaves[n].esiStatus=descriptions[n].status;
+                current.slaves[n].esiSdoDictionary=descriptions[n].dictionary;
             }
         }
         current.generation=generation;current.completed=lastCompleted;current.result=lastResult;current.busy=busy;
@@ -201,6 +204,7 @@ struct Controller::Impl {
         if(fast.slaves.size()==published.slaves.size())for(size_t n=0;n<fast.slaves.size();++n) {
             fast.slaves[n].pdoEntries=published.slaves[n].pdoEntries;
             fast.slaves[n].esiFile=published.slaves[n].esiFile;fast.slaves[n].esiStatus=published.slaves[n].esiStatus;
+            fast.slaves[n].esiSdoDictionary=published.slaves[n].esiSdoDictionary;
         }
         scriptPublished=std::move(fast);
     }
@@ -254,6 +258,13 @@ struct Controller::Impl {
         case CommandKind::WriteSdo:
             if(current.running)return {false,"Stop cyclic exchange before synchronous SDO access.",{}};
             return backend->writeSdo(command.slave,command.index,command.subindex,command.data);
+        case CommandKind::ReadSdoDictionary: {
+            if(current.running)return {false,"Stop cyclic exchange before reading the object dictionary.",{}};
+            const auto selected=std::find_if(current.slaves.begin(),current.slaves.end(),[&](const Slave& slave){return slave.position==command.slave;});
+            if(!current.connected||selected==current.slaves.end())return {false,"Select a connected slave first.",{}};
+            if(selected->state!=2)return {false,"Object dictionary discovery requires confirmed PRE-OP.",{}};
+            return backend->readSdoDictionary(command.slave);
+        }
         case CommandKind::WriteOutput:return backend->writeOutput(command.slave,command.offset,command.data);
         }
         return {false,"Unknown command.",{}};
@@ -284,6 +295,7 @@ struct Controller::Impl {
         {
             std::lock_guard<std::mutex> lock(mutex);
             resultHistory[queued.id]=lastResult;
+            activeRequest=0;
             while(resultHistory.size()>512)resultHistory.erase(resultHistory.begin());
         }
     }
@@ -327,6 +339,7 @@ struct Controller::Impl {
                     cycleDue=current.running&&Clock::now()>=nextCycle;
                     if(!urgent.empty()) {queued=std::move(urgent.front());urgent.pop_front();haveCommand=true;}
                     else if(!cycleDue&&!normal.empty()) {queued=std::move(normal.front());normal.pop_front();haveCommand=true;}
+                    if(haveCommand)activeRequest=queued.id;
                 }
                 if(haveCommand)execute(std::move(queued));else if(cycleDue)exchange();
             }
@@ -379,5 +392,13 @@ bool Controller::result(uint64_t request,Result& value) const {
     const auto found=impl_->resultHistory.find(request);
     if(found==impl_->resultHistory.end())return false;
     value=found->second;return true;
+}
+bool Controller::pending(uint64_t request) const {
+    if(!request)return false;
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if(impl_->activeRequest==request)return true;
+    for(const auto* queue:{&impl_->urgent,&impl_->normal})
+        for(const auto& queued:*queue)if(queued.id==request)return true;
+    return false;
 }
 } // namespace niceecatm

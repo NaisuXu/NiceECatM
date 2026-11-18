@@ -51,6 +51,8 @@ Linux 需要 C++17 编译器、CMake 3.28+、Make，以及所选 SDL 显示后�
 
 默认目标周期为 10 ms，可选 500 us、1、2、5、10、20、50、100 ms。它们是请求周期，实际表现以统计值为准，不提供硬实时保证。同步 ESC 寄存器和 CoE SDO 访问要求停止周期交换。
 
+CoE / SDO 显示所选从站的对象字典，来源包括匹配的 ESI，以及从站支持时在 PRE-OP 获取的在线 SDO Information。选择条目可填入地址和类型，当前值需手动读取。列表区分来源并提示获取不完整的情况，不会把 ESI 默认值显示成设备当前值。
+
 界面默认英文，语言偏好保存在可执行文件旁的 `preferences.ini`，脚本保存在旁边的 `scripts/`。软件版本采用构建时间 `yyyymmddhhmm`，界面、CLI 帮助与 Windows 文件属性保持一致。
 
 ## 项目结构
@@ -80,7 +82,7 @@ dist/         安装生成的应用发布包
 - [通讯性能与网卡调优](docs/performance.zh-CN.md)
 - [第三方版本与许可证](THIRD_PARTY.md)
 
-当前尚未实现 FoE、EoE、SoE、VoE 服务、BOOT 流程、DC 触发配置和完整对象字典发现。同一总线双口冗余和 overlapped 映射需要结合目标网卡与从站完成验收。
+当前尚未实现 FoE、EoE、SoE、VoE 服务、BOOT 流程和 DC 触发配置。对象字典覆盖范围取决于 ESI 和从站的 SDO Information 能力；在线发现有请求和时间上限，可能返回部分字典。同一总线双口冗余和 overlapped 映射需要结合目标网卡与从站完成验收。
 
 ## 许可证
 

@@ -4,6 +4,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,28 @@ struct Connection {
     int cycleUs=10000;
 };
 struct LocalizedText { uint32_t lcid=0; std::string text; };
+// CoE object descriptions are metadata, never cached live values. Access bits
+// are CoE read PRE-OP/SAFE-OP/OP (0..2), write PRE-OP/SAFE-OP/OP (3..5).
+struct SdoEntry {
+    uint8_t subindex=0;
+    uint16_t dataType=0, access=0;
+    unsigned bitLength=0;
+    bool accessKnown=false, online=false, esi=false;
+    std::string type;
+    std::vector<LocalizedText> names;
+};
+struct SdoObject {
+    uint16_t index=0;
+    uint8_t objectCode=0, maxSubindex=0;
+    bool online=false, esi=false;
+    std::vector<LocalizedText> names;
+    std::vector<SdoEntry> entries;
+};
+struct SdoDictionary {
+    std::vector<SdoObject> objects;
+    bool complete=false;
+    std::string status;
+};
 // All offsets are relative to the compact per-slave IN or OUT image, in bits.
 // Padding participates in layout validation but is not an editable signal.
 struct PdoEntry {
@@ -43,7 +66,13 @@ struct Slave {
     bool inputLayoutKnown=false, outputLayoutKnown=false;
     std::vector<PdoEntry> pdoEntries;
     std::string pdoIssue, esiFile, esiStatus;
+    bool sdoInfo=false;
+    // Immutable descriptions are shared by GUI/script snapshots, keeping large
+    // dictionaries out of per-cycle deep copies. ESI never overwrites live OD.
+    std::shared_ptr<const SdoDictionary> sdoDictionary, esiSdoDictionary;
 };
+std::vector<SdoObject> mergedSdoObjects(const Slave&);
+std::string sdoName(const std::vector<LocalizedText>&, bool chinese);
 struct LogEntry { uint64_t sequence=0; std::string time, message; bool error=false; };
 struct Result {
     bool ok=false;
@@ -65,7 +94,7 @@ struct Snapshot {
     std::vector<LogEntry> logs;
     Result result;
 };
-enum class CommandKind { RefreshAdapters, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, WriteOutput };
+enum class CommandKind { RefreshAdapters, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, ReadSdoDictionary, WriteOutput };
 struct Command {
     CommandKind kind=CommandKind::RefreshAdapters;
     uint64_t generation=0;

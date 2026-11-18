@@ -19,6 +19,7 @@ public:
     virtual Result writeRegister(int slave, uint16_t offset, const std::vector<uint8_t>&)=0;
     virtual Result readSdo(int slave, uint16_t index, uint8_t sub, int capacity)=0;
     virtual Result writeSdo(int slave, uint16_t index, uint8_t sub, const std::vector<uint8_t>&)=0;
+    virtual Result readSdoDictionary(int) {return {false,"Online SDO dictionary discovery is unavailable.",{}};}
     virtual Result writeOutput(int slave, int offset, const std::vector<uint8_t>&)=0;
     virtual void cycle()=0;
     virtual void close()=0;

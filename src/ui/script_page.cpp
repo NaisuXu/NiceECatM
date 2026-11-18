@@ -646,6 +646,8 @@ void scriptTick(Controller& controller,const Snapshot& snapshot) {
     }
 }
 
+bool scriptRunning() {return script.running;}
+
 void scriptPage(Controller& controller,const Snapshot& snapshot) {
     ensureInitialized(&controller);
     pullEditorToSource();

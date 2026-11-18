@@ -41,6 +41,7 @@ public:
             Slave slave;slave.position=i;slave.name=names[i-1];slave.address=uint16_t(0x1000+i);
             slave.vendor=i==5?0xEC01:2;slave.product=uint32_t(i*1000);slave.revision=1;slave.serial=uint32_t(20261100+i);
             slave.state=slave.requested=2;slave.dc=i>=4;slave.mailboxProtocols=i==4?0x003e:0;
+            slave.sdoInfo=i==4;
             if(i==2) {slave.inputs={0x2d};slave.inputBits=8;slave.inputOffset=20;}
             if(i==3) {slave.outputs={0};slave.outputBits=8;slave.outputOffset=0;}
             if(i==4) {slave.inputs={0,0x00,0x10,0x00,0x08};slave.inputBits=40;slave.inputOffset=21;}
@@ -139,6 +140,33 @@ public:
         if((s->state&15)!=1&&(s->state&15)!=2)return failure("SM configuration is writable in INIT / PRE-OP only.");
         auto& regs=registers_[position];std::copy(bytes.begin(),bytes.end(),regs.begin()+offset);view_.mapped=false;
         return success("Simulated SM write complete; mapping invalidated. Rescan before process exchange.");
+    }
+    Result readSdoDictionary(int position) override {
+        if(!serviceAllowed())return failure("Stop cyclic exchange before reading the SDO dictionary.");
+        auto* slave=find(position);if(!slave)return failure("Slave does not exist.");
+        if(!(slave->mailboxProtocols&4))return failure("Slave does not declare CoE support.");
+        if(slave->state!=2)return failure("Online SDO dictionary discovery requires confirmed PRE-OP.");
+        if(!slave->sdoInfo)return failure("Slave does not declare SDO Information support.");
+        auto dictionary=std::make_shared<SdoDictionary>();
+        const auto add=[&](uint16_t index,const char* name,uint8_t code) -> SdoObject& {
+            dictionary->objects.push_back({});auto& object=dictionary->objects.back();
+            object.index=index;object.objectCode=code;object.online=true;object.names={{0x0409,name}};return object;
+        };
+        const auto entry=[](SdoObject& object,uint8_t sub,const char* name,const char* type,unsigned bits,uint16_t access) {
+            SdoEntry value;value.subindex=sub;value.names={{0x0409,name}};value.type=type;value.bitLength=bits;
+            value.access=access;value.accessKnown=true;value.online=true;
+            object.maxSubindex=std::max(object.maxSubindex,sub);object.entries.push_back(std::move(value));
+        };
+        entry(add(0x1000,"Device type",7),0,"Device type","UINT32",32,7);
+        entry(add(0x1008,"Device name",7),0,"Device name","STRING",104,7);
+        auto& identity=add(0x1018,"Identity",9);
+        entry(identity,0,"Number of entries","UINT8",8,7);
+        entry(identity,1,"Vendor ID","UINT32",32,7);entry(identity,2,"Product code","UINT32",32,7);
+        entry(identity,3,"Revision","UINT32",32,7);entry(identity,4,"Serial number","UINT32",32,7);
+        entry(add(0x8000,"Channel parameters",9),0x11,"Gain","UINT16",16,63);
+        dictionary->complete=true;dictionary->status="Online SDO dictionary complete: 4 objects, 8 entries.";
+        slave->sdoDictionary=std::move(dictionary);
+        return success(slave->sdoDictionary->status);
     }
     Result readSdo(int position,uint16_t index,uint8_t sub,int capacity) override {
         if(!serviceAllowed())return failure("Stop cyclic exchange before synchronous SDO access.");

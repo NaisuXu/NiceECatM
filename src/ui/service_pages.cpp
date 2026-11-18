@@ -3,9 +3,13 @@
 
 #include "ui/internal.hpp"
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -50,23 +54,158 @@ struct RegisterRead {
     }
 };
 RegisterRead registerRead;
-struct Reference {uint16_t index;uint8_t sub;const char* en;const char* zh;int type;};
-constexpr Reference references[]={
-    {0x1000,0,"Device type","设备类型",7},{0x1008,0,"Device name","设备名称",13},
-    {0x1018,1,"Vendor ID","厂商 ID",7},{0x1018,2,"Product code","产品代码",7},
-    {0x1018,3,"Revision","修订号",7},{0x1018,4,"Serial number","序列号",7}
-};
+constexpr const char* sdoTypes[]={"BOOL","UINT3","UINT8","INT8","UINT12","UINT16","INT16","UINT32","INT32","UINT64","INT64","REAL32","REAL64","STRING","BYTES"};
+constexpr int sdoBytesType=14;
 struct SdoRead {
-    uint64_t generation=~uint64_t(0),ticket=0;int slave=-1;
-    uint16_t pendingIndex=0,index=0;uint8_t pendingSub=0,sub=0;
-    bool received=false;std::vector<uint8_t> bytes;
+    struct Value {std::vector<uint8_t> bytes;std::string type;};
+    struct Pending {uint64_t ticket=0;int slave=0;uint32_t address=0;std::string type;std::chrono::steady_clock::time_point issued;};
+    uint64_t generation=~uint64_t(0);
+    Controller* controller=nullptr;
+    std::map<std::pair<int,uint32_t>,Value> values;
+    std::vector<Pending> pending;
     void observe(const Snapshot& s) {
-        if(generation!=s.generation||slave!=ui.selected){*this={};generation=s.generation;slave=ui.selected;}
-        if(ticket&&s.completed==ticket){if(s.result.ok){bytes=s.result.data;index=pendingIndex;sub=pendingSub;received=true;}ticket=0;}
+        if(generation!=s.generation){generation=s.generation;values.clear();pending.clear();}
+        for(auto it=pending.begin();it!=pending.end();) {
+            const bool ongoing=controller&&controller->pending(it->ticket);
+            Result result;
+            if(!controller||!controller->result(it->ticket,result)) {
+                // Result history is bounded; a suspended GUI must not retain
+                // an unresolvable request forever after heavy script traffic.
+                if(controller&&!ongoing&&std::chrono::steady_clock::now()-it->issued>std::chrono::seconds(30))it=pending.erase(it);else ++it;
+                continue;
+            }
+            if(result.ok) {
+                const auto key=std::make_pair(it->slave,it->address);
+                if(values.size()>=256&&!values.count(key))values.erase(values.begin());
+                values[key]={std::move(result.data),it->type};
+            }
+            it=pending.erase(it);
+        }
+    }
+    const Value* find(int slave,uint16_t index,uint8_t sub) const {
+        const auto found=values.find({slave,(uint32_t(index)<<8)|sub});
+        return found==values.end()?nullptr:&found->second;
     }
 };
 SdoRead sdoRead;
 std::string objectAddress(uint16_t index,uint8_t sub) {return hexNumber(index,4)+":"+hexNumber(sub,2).substr(2);}
+std::string sdoValueText(const SdoRead::Value& value,bool hex=false) {
+    return value.type=="BYTES"?hexBytes(value.bytes):decodeValue(value.bytes,value.type,hex);
+}
+std::string sdoValuePreview(const SdoRead::Value& value) {
+    if((value.type=="BYTES"||value.type=="STRING")&&value.bytes.size()>96) {
+        SdoRead::Value preview;preview.type=value.type;preview.bytes.assign(value.bytes.begin(),value.bytes.begin()+96);
+        if(value.type=="STRING") {
+            // Keep an entire UTF-8 code point at the preview boundary.
+            while(!preview.bytes.empty()&&(value.bytes[preview.bytes.size()]&0xc0)==0x80)preview.bytes.pop_back();
+        }
+        return sdoValueText(preview)+"…";
+    }
+    return sdoValueText(value);
+}
+std::string lowerSdoText(std::string text) {
+    std::transform(text.begin(),text.end(),text.begin(),[](unsigned char ch){return char(std::tolower(ch));});return text;
+}
+struct SdoDictionaryView {
+    struct Row {const SdoObject* object;const SdoEntry* entry;std::string name;bool child=false;};
+    struct Pending {uint64_t ticket;std::shared_ptr<const SdoDictionary> previous;std::chrono::steady_clock::time_point issued;};
+    uint64_t generation=~uint64_t(0);
+    int slave=-1;
+    bool chinese=false,dirty=true;
+    char filter[160]="";
+    std::shared_ptr<const SdoDictionary> online,esi;
+    std::vector<SdoObject> objects;
+    std::vector<Row> rows;
+    std::set<int> attempted;
+    Controller* controller=nullptr;
+    std::map<int,Pending> pending;
+    std::map<int,std::string> errors;
+    std::map<int,std::shared_ptr<const SdoDictionary>> observedOnline;
+    void observeResults(const Snapshot& s) {
+        if(generation!=s.generation){auto* host=controller;*this={};controller=host;generation=s.generation;}
+        // A result can become available before the GUI receives its metadata
+        // snapshot. A later new dictionary supersedes that transient error.
+        for(const auto& device:s.slaves) {
+            auto& previous=observedOnline[device.position];
+            if(previous!=device.sdoDictionary){previous=device.sdoDictionary;errors.erase(device.position);}
+        }
+        for(auto it=pending.begin();it!=pending.end();) {
+            const auto device=std::find_if(s.slaves.begin(),s.slaves.end(),[&](const Slave& slave){return slave.position==it->first;});
+            const bool updated=device!=s.slaves.end()&&device->sdoDictionary&&device->sdoDictionary!=it->second.previous;
+            const bool ongoing=controller&&controller->pending(it->second.ticket);
+            Result result;
+            if(controller&&controller->result(it->second.ticket,result)) {
+                if(result.ok||updated)errors.erase(it->first);else errors[it->first]=result.message;
+            } else if(controller&&!ongoing&&updated)errors.erase(it->first);
+            else if(controller&&!ongoing&&std::chrono::steady_clock::now()-it->second.issued>std::chrono::seconds(30))errors[it->first]="Online dictionary result expired; refresh to try again.";
+            else {++it;continue;}
+            it=pending.erase(it);
+        }
+    }
+    void observe(Controller& host,const Snapshot& s,const Slave* device) {
+        controller=&host;observeResults(s);
+        if(slave!=(device?device->position:-1)||online!=(device?device->sdoDictionary:nullptr)||esi!=(device?device->esiSdoDictionary:nullptr)) {
+            slave=device?device->position:-1;online=device?device->sdoDictionary:nullptr;esi=device?device->esiSdoDictionary:nullptr;
+            objects=device?mergedSdoObjects(*device):std::vector<SdoObject>{};
+            dirty=true;
+        }
+        if(chinese!=ui.chinese){chinese=ui.chinese;dirty=true;}
+        if(!dirty)return;
+        rows.clear();const auto query=lowerSdoText(filter);
+        for(const auto& object:objects) {
+            const auto objectName=sdoName(object.names,chinese);
+            const bool objectMatch=query.empty()||lowerSdoText(hexNumber(object.index,4)+" "+objectName).find(query)!=std::string::npos;
+            const bool scalar=object.objectCode!=8&&object.objectCode!=9&&object.entries.size()==1&&object.entries.front().subindex==0;
+            if(scalar) {
+                const auto& entry=object.entries.front();auto name=sdoName(entry.names,chinese);if(name.empty())name=objectName;
+                if(objectMatch||lowerSdoText(objectAddress(object.index,0)+" "+name).find(query)!=std::string::npos)rows.push_back({&object,&entry,std::move(name)});
+                continue;
+            }
+            std::vector<Row> children;
+            for(const auto& entry:object.entries) {
+                auto name=sdoName(entry.names,chinese);
+                if(objectMatch||lowerSdoText(objectAddress(object.index,entry.subindex)+" "+name).find(query)!=std::string::npos)children.push_back({&object,&entry,std::move(name),true});
+            }
+            if(!objectMatch&&children.empty())continue;
+            rows.push_back({&object,nullptr,objectName});
+            rows.insert(rows.end(),children.begin(),children.end());
+        }
+        dirty=false;
+    }
+    void request(Controller& controller,const Snapshot& s,int position) {
+        attempted.insert(position);Command command;command.kind=CommandKind::ReadSdoDictionary;command.slave=position;
+        const auto previous=latestTicket();send(controller,s,std::move(command));
+        if(latestTicket()!=previous){pending[position]={latestTicket(),online,std::chrono::steady_clock::now()};errors.erase(position);}
+    }
+};
+SdoDictionaryView sdoDictionaryView;
+void selectSdoEntry(uint16_t index,const SdoEntry& entry) {
+    std::snprintf(ui.sdoIndex,sizeof(ui.sdoIndex),"0x%04X",index);
+    std::snprintf(ui.sdoSub,sizeof(ui.sdoSub),"0x%02X",entry.subindex);
+    ui.sdoType=sdoBytesType;
+    for(int n=0;n<sdoBytesType;++n)if(entry.type==sdoTypes[n]){ui.sdoType=n;break;}
+    // OCTET_STRING and UNICODE_STRING need their own codecs; preserve their
+    // bytes rather than interpreting binary or UTF-16 as a visible string.
+    if(entry.dataType==0x000a||entry.dataType==0x000b)ui.sdoType=sdoBytesType;
+    ui.sdoCapacity=entry.bitLength?int(std::min<uint64_t>(65536,(uint64_t(entry.bitLength)+7)/8)):256;
+    ui.localError.clear();
+}
+const char* sdoSource(bool online,bool esi) {return online?(esi?tr("Online + ESI","在线 + ESI"):tr("Online","在线")):(esi?"ESI":"—");}
+const char* sdoAccess(const SdoEntry& entry) {
+    if(!entry.accessKnown)return "—";
+    const bool read=entry.access&7,write=entry.access&56;
+    return read?(write?"R/W":"RO"):(write?"WO":"—");
+}
+void sdoAccessTooltip(const SdoEntry& entry) {
+    if(!ImGui::IsItemHovered())return;
+    ImGui::BeginTooltip();
+    if(!entry.accessKnown)ImGui::TextUnformatted(tr("Access rights are not described; the slave validates access.","未提供访问权限描述，以从站实际响应为准。"));
+    else {
+        const char* states[]={"PRE-OP","SAFE-OP","OP"};
+        for(unsigned n=0;n<3;++n)ImGui::Text("%s: %s / %s",states[n],(entry.access&(1u<<n))?tr("read","可读"):tr("no read","不可读"),(entry.access&(8u<<n))?tr("write","可写"):tr("no write","不可写"));
+    }
+    ImGui::EndTooltip();
+}
 void resultBox(const char* id,float height) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(.964f,.978f,.985f,1));ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(10,9));
     ImGui::BeginChild(id,{0,height},ImGuiChildFlags_Borders|ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -106,7 +245,7 @@ void registerDump() {
 // Keep a response bound to its issued address even if another tab is visible
 // when the controller publishes completion. This performs no bus operation.
 void observeServiceResults(const Snapshot& s) {
-    registerRead.observe(s);sdoRead.observe(s);
+    registerRead.observe(s);sdoRead.observe(s);sdoDictionaryView.observeResults(s);
 }
 
 void devicePage(Controller& controller,const Snapshot& s) {
@@ -217,39 +356,135 @@ void mailboxPage(const Snapshot& s) {
 }
 
 void sdoPage(Controller& c,const Snapshot& s) {
-    sdoRead.observe(s);const auto* d=selected(s);const auto state=d?d->state&0xf:0;const bool coe=d&&(d->mailboxProtocols&4);
+    sdoRead.controller=&c;sdoRead.observe(s);const auto* d=selected(s);
+    const auto state=d?d->state&0xf:0;const bool coe=d&&(d->mailboxProtocols&4);
+    sdoDictionaryView.observe(c,s,d);
+    const bool dictionaryEnabled=coe&&d->sdoInfo&&s.connected&&!blocked(s)&&!s.running&&d->state==2;
+    if(dictionaryEnabled&&!scriptRunning()&&!d->sdoDictionary&&!sdoDictionaryView.attempted.count(d->position))sdoDictionaryView.request(c,s,d->position);
     const bool enabled=coe&&s.connected&&!blocked(s)&&!s.running&&(state==2||state==4||state==8);
-    ImGui::BeginChild("sdo-page",{0,0});const float height=std::max(490.0f,ImGui::GetContentRegionAvail().y-2);ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(0,0));
+    ImGui::BeginChild("sdo-page",{0,0},ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar);
+    const float height=std::max(1.0f,ImGui::GetContentRegionAvail().y-2);
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(0,0));
     if(ImGui::BeginTable("sdo-columns",2,ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("reference",ImGuiTableColumnFlags_WidthStretch);ImGui::TableSetupColumn("editor",ImGuiTableColumnFlags_WidthFixed,300);ImGui::TableNextColumn();
-        beginCard("sdo-address-reference",{ImGui::GetContentRegionAvail().x-gutter,height});cardHeader(tr("Object address reference","对象地址参考"),Icon::Book);smallNote("Manual address shortcuts · not a discovered object dictionary","手动地址快捷项 · 非已发现的对象字典");divider();
-        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(8,11));
-        if(ImGui::BeginTable("sdo-reference-table",4,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_ScrollY,{0,std::max(255.0f,ImGui::GetContentRegionAvail().y-120)})) {
-            ImGui::TableSetupColumn("Index : Sub",ImGuiTableColumnFlags_WidthFixed,100);ImGui::TableSetupColumn(tr("Reference object","参考对象"),ImGuiTableColumnFlags_WidthStretch);ImGui::TableSetupColumn(tr("Data type","数据类型"),ImGuiTableColumnFlags_WidthFixed,72);ImGui::TableSetupColumn(tr("Read cache","读取缓存"),ImGuiTableColumnFlags_WidthFixed,108);ImGui::TableSetupScrollFreeze(0,1);ImGui::TableHeadersRow();
+        ImGui::TableSetupColumn("dictionary",ImGuiTableColumnFlags_WidthStretch);ImGui::TableSetupColumn("editor",ImGuiTableColumnFlags_WidthFixed,280);ImGui::TableNextColumn();
+        beginCard("sdo-object-dictionary",{ImGui::GetContentRegionAvail().x-gutter,height});
+        cardHeader(tr("Object dictionary","对象字典"),Icon::Book);
+        const float refreshWidth=ImGui::CalcTextSize(tr("Refresh dictionary","刷新字典")).x+ImGui::GetStyle().FramePadding.x*2;
+        ImGui::SetNextItemWidth(std::max(50.0f,ImGui::GetContentRegionAvail().x-refreshWidth-ImGui::GetStyle().ItemSpacing.x));
+        if(ImGui::InputTextWithHint("##sdo-search",tr("Search name / index","搜索名称 / 索引"),sdoDictionaryView.filter,sizeof(sdoDictionaryView.filter)))sdoDictionaryView.dirty=true;
+        ImGui::SameLine();ImGui::BeginDisabled(!dictionaryEnabled||blocked(s));
+        if(ImGui::Button(label("Refresh dictionary","刷新字典","sdo-refresh-dictionary").c_str(),{refreshWidth,0}))sdoDictionaryView.request(c,s,d->position);
+        ImGui::EndDisabled();
+        if(d&&sdoDictionaryView.pending.count(d->position))smallNote("Reading online descriptions…","正在读取在线对象描述…");
+        else if(d&&sdoDictionaryView.errors.count(d->position)) {
+            ImGui::PushFont(fonts.small);ImGui::TextColored(amber,"%s",tr("Online dictionary unavailable; cached descriptions retained.","在线字典未能读取，保留已获取的描述。"));
+            if(ImGui::IsItemHovered()){ImGui::BeginTooltip();ImGui::PushTextWrapPos(360);ImGui::TextUnformatted(trMessage(sdoDictionaryView.errors.at(d->position)).c_str());ImGui::PopTextWrapPos();ImGui::EndTooltip();}ImGui::PopFont();
+        } else if(d&&d->sdoDictionary) {
+            ImGui::PushFont(fonts.small);
+            if(!d->sdoDictionary->complete&&d->sdoDictionary->objects.empty())ImGui::TextColored(amber,"%s",tr("Online dictionary unavailable","在线字典不可用"));
+            else ImGui::TextColored(d->sdoDictionary->complete?muted:amber,"%s · %zu %s",d->sdoDictionary->complete?tr("Online dictionary","在线字典"):tr("Partial online dictionary","部分在线字典"),d->sdoDictionary->objects.size(),tr("objects","个对象"));
+            if(ImGui::IsItemHovered()&&!d->sdoDictionary->status.empty()){ImGui::BeginTooltip();ImGui::PushTextWrapPos(360);ImGui::TextUnformatted(trMessage(d->sdoDictionary->status).c_str());ImGui::PopTextWrapPos();ImGui::EndTooltip();}ImGui::PopFont();
+        } else if(d&&d->esiSdoDictionary)smallNote("ESI descriptions · current values are read from the slave","ESI 对象描述 · 当前值需从从站读取");
+        else if(d&&!coe)smallNote("The selected slave does not declare CoE support.","所选从站未声明支持 CoE。");
+        else if(d&&!d->sdoInfo)smallNote("No SDO Information support or ESI dictionary is available.","从站未声明支持 SDO Information，且没有 ESI 字典。");
+        else if(d&&d->state!=2)smallNote("Enter PRE-OP to read the online dictionary.","切换到 PRE-OP 可读取在线字典。");
+        else if(scriptRunning())smallNote("Use Refresh dictionary when the bus is available.","总线可用时，可点击刷新字典。");
+        else smallNote("Select a slave in the topology tree.","请在左侧拓扑树中选择从站。");
+        ImGui::Spacing();
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(5,5));
+        const auto dictionaryFlags=ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_Resizable|ImGuiTableFlags_ScrollY|ImGuiTableFlags_ScrollX;
+        // Preserve a readable name column in narrow windows. Reserve the
+        // vertical scrollbar so it cannot cause horizontal scrolling at the
+        // normal window size; only the table scrolls when space is limited.
+        const float dictionaryWidth=std::max(650.0f,ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ScrollbarSize);
+        if(ImGui::BeginTable("sdo-dictionary-table",7,dictionaryFlags,{0,std::max(1.0f,ImGui::GetContentRegionAvail().y)},dictionaryWidth)) {
+            ImGui::TableSetupColumn("Index : Sub",ImGuiTableColumnFlags_WidthFixed,98);
+            ImGui::TableSetupColumn(tr("Name","名称"),ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn(tr("Type","类型"),ImGuiTableColumnFlags_WidthFixed,62);
+            ImGui::TableSetupColumn(tr("Bits","位长"),ImGuiTableColumnFlags_WidthFixed,32);
+            ImGui::TableSetupColumn(tr("Access","权限"),ImGuiTableColumnFlags_WidthFixed,46);
+            ImGui::TableSetupColumn(tr("Read cache","读取缓存"),ImGuiTableColumnFlags_WidthFixed,90);
+            ImGui::TableSetupColumn(tr("Source","来源"),ImGuiTableColumnFlags_WidthFixed,72);
+            ImGui::TableSetupScrollFreeze(0,1);ImGui::TableHeadersRow();
             uint64_t currentIndex=0,currentSub=0;parseUnsigned(ui.sdoIndex,65535,currentIndex);parseUnsigned(ui.sdoSub,255,currentSub);
-            for(const auto& ref:references) {
-                ImGui::PushID(ref.index*256+ref.sub);ImGui::TableNextRow();ImGui::TableNextColumn();
-                if(ImGui::Selectable(objectAddress(ref.index,ref.sub).c_str(),currentIndex==ref.index&&currentSub==ref.sub,ImGuiSelectableFlags_SpanAllColumns)){std::snprintf(ui.sdoIndex,sizeof(ui.sdoIndex),"0x%04X",ref.index);std::snprintf(ui.sdoSub,sizeof(ui.sdoSub),"0x%02X",ref.sub);ui.sdoType=ref.type;ui.localError.clear();}
-                ImGui::TableNextColumn();ImGui::TextWrapped("%s",tr(ref.en,ref.zh));ImGui::TableNextColumn();smallText(types[ref.type]);ImGui::TableNextColumn();
-                if(sdoRead.received&&sdoRead.index==ref.index&&sdoRead.sub==ref.sub){const auto value=decodeValue(sdoRead.bytes,types[ref.type]);ImGui::TextWrapped("%s",ref.type==13?value.c_str():trMessage(value).c_str());}else smallText(tr("Not read","尚未读取"));ImGui::PopID();
-            }ImGui::EndTable();
+            ImGuiListClipper clipper;clipper.Begin(int(sdoDictionaryView.rows.size()));
+            while(clipper.Step())for(int rowNumber=clipper.DisplayStart;rowNumber<clipper.DisplayEnd;++rowNumber) {
+                const auto& row=sdoDictionaryView.rows[size_t(rowNumber)];const auto& object=*row.object;const auto* entry=row.entry;
+                ImGui::PushID(object.index);ImGui::PushID(entry?entry->subindex:-1);ImGui::TableNextRow();ImGui::TableNextColumn();
+                if(!entry)ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,ImGui::GetColorU32(ImVec4(.92f,.96f,.97f,1)));
+                if(row.child)ImGui::SetCursorPosX(ImGui::GetCursorPosX()+12.0f);
+                if(entry) {
+                    const bool current=currentIndex==object.index&&currentSub==entry->subindex;
+                    if(ImGui::Selectable(objectAddress(object.index,entry->subindex).c_str(),current,ImGuiSelectableFlags_SpanAllColumns))selectSdoEntry(object.index,*entry);
+                } else {
+                    ImGui::TextColored(teal,"%s",hexNumber(object.index,4).c_str());
+                }
+                ImGui::TableNextColumn();
+                if(row.child)ImGui::SetCursorPosX(ImGui::GetCursorPosX()+12.0f);
+                ImGui::TextColored(entry?ink:teal,"%s",row.name.empty()?"—":row.name.c_str());
+                if(ImGui::IsItemHovered()&&!row.name.empty()){ImGui::BeginTooltip();ImGui::PushTextWrapPos(400);ImGui::TextUnformatted(row.name.c_str());ImGui::PopTextWrapPos();ImGui::EndTooltip();}
+                ImGui::TableNextColumn();ImGui::TextUnformatted(entry?(entry->type.empty()?"BYTES":entry->type.c_str()):(object.objectCode==8?"ARRAY":object.objectCode==9?"RECORD":"—"));
+                ImGui::TableNextColumn();if(entry&&entry->bitLength)ImGui::Text("%u",entry->bitLength);else ImGui::TextDisabled("—");
+                ImGui::TableNextColumn();ImGui::TextUnformatted(entry?sdoAccess(*entry):"—");if(entry)sdoAccessTooltip(*entry);
+                ImGui::TableNextColumn();
+                if(entry) {
+                    if(const auto* value=sdoRead.find(ui.selected,object.index,entry->subindex)) {
+                        const auto text=sdoValuePreview(*value);ImGui::TextUnformatted(text.c_str());
+                        if(ImGui::IsItemHovered()){ImGui::BeginTooltip();ImGui::PushTextWrapPos(400);ImGui::TextUnformatted(text.c_str());ImGui::PopTextWrapPos();ImGui::EndTooltip();}
+                    } else ImGui::TextDisabled("%s",tr("Not read","尚未读取"));
+                }
+                ImGui::TableNextColumn();const bool online=entry?entry->online:object.online,esi=entry?entry->esi:object.esi;
+                ImGui::TextDisabled("%s",sdoSource(online,esi));
+                if(!online&&esi&&ImGui::IsItemHovered()){ImGui::BeginTooltip();ImGui::TextUnformatted(tr("ESI description; existence and access are not confirmed online.","ESI 离线描述，对象是否存在及访问权限尚未在线确认。"));ImGui::EndTooltip();}
+                ImGui::PopID();ImGui::PopID();
+            }
+            if(sdoDictionaryView.rows.empty()) {
+                ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TableSetColumnIndex(1);
+                ImGui::TextDisabled("%s",tr(sdoDictionaryView.objects.empty()?"No object descriptions available":"No matching objects",sdoDictionaryView.objects.empty()?"没有可用的对象描述":"没有匹配的对象"));
+            }
+            ImGui::EndTable();
         }
-        ImGui::PopStyleVar();divider();smallNote("These common CoE addresses are navigation aids. Their existence, access rights and current values are confirmed only by the selected device's response.","常见 CoE 地址仅用于快速填入。是否存在、访问权限及当前值，以所选设备实际响应为准。");
-        ImGui::Spacing();smallNote("Dictionary discovery is pending. Manual Index / SubIndex access remains available; object permissions are enforced by the slave.","对象字典发现待接入。可手动输入 Index / SubIndex，具体访问权限由从站执行。");endCard();ImGui::TableNextColumn();
-        beginCard("sdo-parameter-editor",{0,height});cardHeader(tr("SDO parameter access","SDO 参数访问"),Icon::Book);if(const auto* d=selected(s)){fieldLabel("Selected slave","\u5df2\u9009\u62e9\u4ece\u7ad9");ImGui::Text("%02d  %s",d->position,d->name.c_str());}else smallNote("Select a slave in the topology tree.","\u8bf7\u5728\u5de6\u4fa7\u62d3\u6251\u6811\u4e2d\u9009\u62e9\u4ece\u7ad9");ImGui::Spacing();
+        ImGui::PopStyleVar();endCard();ImGui::TableNextColumn();
+        beginCard("sdo-parameter-editor",{0,height});cardHeader(tr("SDO parameter access","SDO 参数访问"),Icon::Book);
+        ImGui::BeginChild("sdo-parameter-body",{0,0});
+        if(d){ImGui::Text("%02d  %s",d->position,d->name.c_str());}else smallNote("Select a slave in the topology tree.","请在左侧拓扑树中选择从站。");
+        ImGui::Spacing();
         if(ImGui::BeginTable("sdo-index-fields",2,ImGuiTableFlags_SizingStretchSame)){ImGui::TableNextColumn();fieldLabel("Index","Index");ImGui::InputText("##sdo-index",ui.sdoIndex,sizeof(ui.sdoIndex));ImGui::TableNextColumn();fieldLabel("SubIndex","SubIndex");ImGui::InputText("##sdo-sub",ui.sdoSub,sizeof(ui.sdoSub));ImGui::EndTable();}
-        ImGui::Spacing();fieldLabel("Data type","数据类型");ImGui::SetNextItemWidth(-1);ImGui::Combo("##sdo-type",&ui.sdoType,types,14);ImGui::Spacing();
-        if(ImGui::BeginTable("sdo-capacity-fields",2,ImGuiTableFlags_SizingStretchProp)){ImGui::TableSetupColumn("capacity",ImGuiTableColumnFlags_WidthStretch);ImGui::TableSetupColumn("format",ImGuiTableColumnFlags_WidthFixed,68);ImGui::TableNextColumn();fieldLabel("Read capacity (B)","读取容量（B）");ImGui::InputInt("##sdo-capacity",&ui.sdoCapacity,0,0);ImGui::TableNextColumn();fieldLabel("Format","格式");ImGui::Checkbox("HEX##sdo-hex",&ui.sdoHex);ImGui::EndTable();}
+        ImGui::Spacing();fieldLabel("Data type","数据类型");ImGui::SetNextItemWidth(-1);ImGui::Combo("##sdo-type",&ui.sdoType,sdoTypes,15);ImGui::Spacing();
+        if(ImGui::BeginTable("sdo-capacity-fields",2,ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("capacity",ImGuiTableColumnFlags_WidthStretch);ImGui::TableSetupColumn("format",ImGuiTableColumnFlags_WidthFixed,68);ImGui::TableNextColumn();fieldLabel("Read capacity (B)","读取容量（B）");ImGui::InputInt("##sdo-capacity",&ui.sdoCapacity,0,0);
+            ImGui::TableNextColumn();fieldLabel("Format","格式");
+            if(ui.sdoType==sdoBytesType){bool hex=true;ImGui::BeginDisabled();ImGui::Checkbox("HEX##sdo-hex",&hex);ImGui::EndDisabled();}else ImGui::Checkbox("HEX##sdo-hex",&ui.sdoHex);
+            ImGui::EndTable();
+        }
         ImGui::Spacing();fieldLabel("Write value","写入值");ImGui::InputText("##sdo-value",ui.sdoValue,sizeof(ui.sdoValue));ImGui::Spacing();const float buttonWidth=(ImGui::GetContentRegionAvail().x-ImGui::GetStyle().ItemSpacing.x)*.5f;
         ImGui::BeginDisabled(!enabled);ImGui::PushStyleColor(ImGuiCol_Button,teal);ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(1,1,1,1));const bool read=ImGui::Button(label("Read","读取","sdo-read").c_str(),{buttonWidth,30});ImGui::PopStyleColor(2);ImGui::SameLine();const bool write=ImGui::Button(label("Write","写入","sdo-write").c_str(),{buttonWidth,30});
         if(read||write) {
             uint64_t index=0,sub=0;std::vector<uint8_t> bytes;std::string error;
-            if(!parseUnsigned(ui.sdoIndex,65535,index)||!parseUnsigned(ui.sdoSub,255,sub))ui.localError="Invalid Index / SubIndex.";else if(read&&(ui.sdoCapacity<1||ui.sdoCapacity>4096))ui.localError="Read capacity must be 1…4096 bytes.";else if(write&&!encodeValue(ui.sdoValue,types[ui.sdoType],ui.sdoHex,bytes,error))ui.localError=error;
-            else{Command cmd;cmd.kind=read?CommandKind::ReadSdo:CommandKind::WriteSdo;cmd.slave=ui.selected;cmd.index=static_cast<uint16_t>(index);cmd.subindex=static_cast<uint8_t>(sub);cmd.length=ui.sdoCapacity;cmd.data=std::move(bytes);const auto previous=latestTicket();send(c,s,std::move(cmd));if(read&&latestTicket()!=previous){sdoRead.ticket=latestTicket();sdoRead.pendingIndex=static_cast<uint16_t>(index);sdoRead.pendingSub=static_cast<uint8_t>(sub);}}
+            if(!parseUnsigned(ui.sdoIndex,65535,index)||!parseUnsigned(ui.sdoSub,255,sub))ui.localError="Invalid Index / SubIndex.";
+            else if(read&&(ui.sdoCapacity<1||ui.sdoCapacity>65536))ui.localError="SDO receive capacity must be 1..65536 bytes";
+            else if(write&&!(ui.sdoType==sdoBytesType?parseHex(ui.sdoValue,bytes,error):encodeValue(ui.sdoValue,sdoTypes[ui.sdoType],ui.sdoHex,bytes,error)))ui.localError=error;
+            else {
+                Command cmd;cmd.kind=read?CommandKind::ReadSdo:CommandKind::WriteSdo;cmd.slave=ui.selected;cmd.index=static_cast<uint16_t>(index);cmd.subindex=static_cast<uint8_t>(sub);cmd.length=ui.sdoCapacity;cmd.data=std::move(bytes);
+                const auto previous=latestTicket();send(c,s,std::move(cmd));
+                if(read&&latestTicket()!=previous)sdoRead.pending.push_back({latestTicket(),ui.selected,(uint32_t(index)<<8)|uint32_t(sub),sdoTypes[ui.sdoType],std::chrono::steady_clock::now()});
+                // Values are only observations of acknowledged reads; a write
+                // invalidates the previous observation rather than predicting it.
+                if(write&&latestTicket()!=previous)sdoRead.values.erase({ui.selected,(uint32_t(index)<<8)|uint32_t(sub)});
+            }
         }
-        ImGui::EndDisabled();ImGui::Spacing();resultBox("sdo-read-result",95);smallText(tr("LAST READ · ORIGINAL BYTES","最近读取 · 原始字节"));
-        if(sdoRead.received){smallText(objectAddress(sdoRead.index,sdoRead.sub).c_str());monoText(hexBytes(sdoRead.bytes));const auto decoded=decodeValue(sdoRead.bytes,types[ui.sdoType],ui.sdoHex);ImGui::TextWrapped("%s",std::string(types[ui.sdoType])=="STRING"?decoded.c_str():trMessage(decoded).c_str());}else smallNote("No read result","尚无读取结果");endResultBox();ImGui::Spacing();
-        if(s.running)smallNote("Stop cyclic exchange before synchronous SDO access.","同步访问 SDO 前请先停止周期交换。");else if(!coe)smallNote("The selected slave does not declare CoE support.","所选从站未声明支持 CoE。");else if(state==1)smallNote("Mailbox is unavailable in INIT. Request PRE-OP, SAFE-OP or OP first.","INIT 中 Mailbox 不可用，请先请求 PRE-OP、SAFE-OP 或 OP。");else smallNote("Write directly when the object permits. Device-returned strings and raw Abort codes are preserved.","对象允许时可直接写入，保留设备返回的字符串和原始 Abort 码。");endCard();ImGui::EndTable();
+        ImGui::EndDisabled();ImGui::Spacing();resultBox("sdo-read-result",95);smallText(tr("READ CACHE · ORIGINAL BYTES","读取缓存 · 原始字节"));
+        uint64_t index=0,sub=0;
+        const auto* value=parseUnsigned(ui.sdoIndex,65535,index)&&parseUnsigned(ui.sdoSub,255,sub)?sdoRead.find(ui.selected,uint16_t(index),uint8_t(sub)):nullptr;
+        if(value) {
+            smallText(objectAddress(uint16_t(index),uint8_t(sub)).c_str());monoText(hexBytes(value->bytes));
+            if(value->type!="BYTES"){const auto decoded=sdoValueText(*value,ui.sdoHex);ImGui::TextWrapped("%s",value->type=="STRING"?decoded.c_str():trMessage(decoded).c_str());}
+        }else smallNote("No read result","尚无读取结果");endResultBox();ImGui::Spacing();
+        if(s.running)smallNote("Stop cyclic exchange before synchronous SDO access.","同步访问 SDO 前请先停止周期交换。");
+        else if(!coe)smallNote("The selected slave does not declare CoE support.","所选从站未声明支持 CoE。");
+        else if(state==1||state==3)smallNote("Mailbox SDO access requires PRE-OP, SAFE-OP or OP.","Mailbox SDO 访问需要 PRE-OP、SAFE-OP 或 OP。");
+        else smallNote("Select an object or enter an address. The slave validates read / write access.","选择对象或手动填写地址，读写权限以从站实际响应为准。");
+        ImGui::EndChild();endCard();ImGui::EndTable();
     }
     ImGui::PopStyleVar();ImGui::EndChild();
 }

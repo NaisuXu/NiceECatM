@@ -51,6 +51,8 @@ On Linux, install a C++17 compiler, CMake 3.28+, Make and the development librar
 
 The default target period is 10 ms; available periods are 500 us, 1, 2, 5, 10, 20, 50 and 100 ms. These are requested periods, with measured timing statistics rather than a hard real-time guarantee. Synchronous ESC register and CoE SDO access requires cyclic exchange to be stopped.
 
+CoE / SDO displays the selected slave's object dictionary from a matching ESI and, when supported, online SDO Information in PRE-OP. Select an entry to fill its address and type; read values explicitly. Sources and partial discovery are identified, and ESI default values are never presented as current device values.
+
 English is the default UI language. The language preference is stored in `preferences.ini` beside the executable. Scripts live in the adjacent `scripts/` directory. Build-time versions use `yyyymmddhhmm` consistently in the UI, CLI help and Windows file properties.
 
 ## Project layout
@@ -80,7 +82,7 @@ dist/         Installed application packages
 - [Communication performance and adapter tuning](docs/performance.md)
 - [Third-party versions and licenses](THIRD_PARTY.md)
 
-FoE, EoE, SoE and VoE services, BOOT workflows, DC trigger configuration and full object-dictionary discovery are not implemented. Same-bus redundancy and overlapped mapping require acceptance testing with the intended adapters and slaves.
+FoE, EoE, SoE and VoE services, BOOT workflows and DC trigger configuration are not implemented. Object dictionary coverage depends on the ESI and the slave's SDO Information support; online discovery is bounded and may return a partial dictionary. Same-bus redundancy and overlapped mapping require acceptance testing with the intended adapters and slaves.
 
 ## License
 

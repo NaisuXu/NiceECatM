@@ -5,18 +5,63 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <map>
 
 namespace niceecatm {
-std::string pdoEntryName(const PdoEntry& entry,bool chinese) {
+std::string sdoName(const std::vector<LocalizedText>& names,bool chinese) {
     const uint32_t exact=chinese?0x0804:0x0409;
     const uint32_t language=chinese?4:9;
-    for(const auto& name:entry.names)if(name.lcid==exact&&!name.text.empty())return name.text;
-    for(const auto& name:entry.names)if((name.lcid&0x3ff)==language&&!name.text.empty())return name.text;
-    for(const auto& name:entry.names)if(name.lcid==0&&!name.text.empty())return name.text;
+    for(const auto& name:names)if(name.lcid==exact&&!name.text.empty())return name.text;
+    for(const auto& name:names)if((name.lcid&0x3ff)==language&&!name.text.empty())return name.text;
+    for(const auto& name:names)if(name.lcid==0&&!name.text.empty())return name.text;
     // An English-only ESI keeps its original name in the Chinese interface.
-    for(const auto& name:entry.names)if((name.lcid&0x3ff)==9&&!name.text.empty())return name.text;
-    for(const auto& name:entry.names)if(!name.text.empty())return name.text;
+    for(const auto& name:names)if((name.lcid&0x3ff)==9&&!name.text.empty())return name.text;
+    for(const auto& name:names)if(!name.text.empty())return name.text;
     return {};
+}
+std::string pdoEntryName(const PdoEntry& entry,bool chinese) {return sdoName(entry.names,chinese);}
+
+std::vector<SdoObject> mergedSdoObjects(const Slave& slave) {
+    std::map<uint16_t,SdoObject> objects;
+    if(slave.esiSdoDictionary)for(const auto& object:slave.esiSdoDictionary->objects) {
+        auto copy=object;copy.online=false;copy.esi=true;
+        for(auto& entry:copy.entries){entry.online=false;entry.esi=true;}
+        objects.emplace(copy.index,std::move(copy));
+    }
+    const auto supplementNames=[](std::vector<LocalizedText>& target,const std::vector<LocalizedText>& source) {
+        for(const auto& name:source)if(!name.text.empty()&&std::none_of(target.begin(),target.end(),[&](const LocalizedText& present){return present.lcid==name.lcid&&!present.text.empty();}))target.push_back(name);
+    };
+    if(slave.sdoDictionary)for(const auto& object:slave.sdoDictionary->objects) {
+        auto found=objects.find(object.index);
+        SdoObject merged=object;merged.online=true;merged.esi=found!=objects.end();
+        std::map<uint8_t,SdoEntry> entries;
+        if(found!=objects.end()) {
+            supplementNames(merged.names,found->second.names);
+            for(const auto& entry:found->second.entries)entries.emplace(entry.subindex,entry);
+        }
+        for(const auto& entry:object.entries) {
+            auto copy=entry;copy.online=true;
+            const auto offline=entries.find(entry.subindex);copy.esi=offline!=entries.end();
+            if(offline!=entries.end()) {
+                supplementNames(copy.names,offline->second.names);
+                // Online types/permissions are authoritative, including an
+                // explicitly unsupported type or zero access rights.
+                if(!copy.dataType&&copy.type.empty()&&copy.bitLength==offline->second.bitLength)copy.type=offline->second.type;
+                if(!copy.accessKnown&&offline->second.accessKnown){copy.access=offline->second.access;copy.accessKnown=true;}
+            }
+            entries[copy.subindex]=std::move(copy);
+        }
+        merged.entries.clear();
+        for(auto& entry:entries)merged.entries.push_back(std::move(entry.second));
+        objects[merged.index]=std::move(merged);
+    }
+    std::vector<SdoObject> result;result.reserve(objects.size());
+    for(auto& object:objects) {
+        auto& entries=object.second.entries;
+        std::sort(entries.begin(),entries.end(),[](const SdoEntry& a,const SdoEntry& b){return a.subindex<b.subindex;});
+        result.push_back(std::move(object.second));
+    }
+    return result;
 }
 namespace {
 std::string integerType(bool sign,unsigned width,unsigned maximum) {

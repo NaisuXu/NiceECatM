@@ -50,6 +50,7 @@ extern "C" {
 #undef vsnprintf
 #endif
 #include "ethercat/cyclic_state_poll.hpp"
+#include "ethercat/sdo_dictionary.hpp"
 
 namespace niceecatm {
 namespace {
@@ -160,6 +161,7 @@ class SoemBackend final: public Backend {
             slave.revision=native.eep_rev;slave.serial=native.eep_ser;slave.state=native.state;
             slave.requested=size_t(s)<requested_.size()?requested_[s]:native.state;
             slave.alCode=native.ALstatuscode;slave.address=native.configadr;slave.mailboxProtocols=native.mbx_proto;
+            slave.sdoInfo=(native.CoEdetails&ECT_COEDET_SDOINFO)!=0;
             slave.dc=native.hasdc!=0;slave.inputBits=native.Ibits;slave.outputBits=native.Obits;
             slave.inputStartBit=native.Istartbit;slave.outputStartBit=native.Ostartbit;
             slave.inputOffset=native.inputs&&inMap(native.inputs,0)?int(native.inputs-io_.data()):-1;
@@ -615,6 +617,23 @@ public:
             return error(errors("ESC write timed out; actual result is unknown"));
         if(mapping) {view_.mapped=false;return done("ESC configuration written; process mapping invalidated. Scan again to rebuild");}
         return done("ESC register write acknowledged");
+    }
+    Result readSdoDictionary(int slave) override {
+        if(!validSlave(slave))return error("Select a connected slave");
+        if(view_.running)return error("Stop cyclic exchange before reading the SDO dictionary.");
+        auto& native=context_->slavelist[slave];
+        ec_alstatust actual{};
+        if(ecx_FPRD(&context_->port,native.configadr,ECT_REG_ALSTAT,sizeof(actual),&actual,RegisterTimeoutUs)!=1)
+            return error("Cannot confirm the selected slave's AL state for dictionary discovery.");
+        native.state=etohs(actual.alstatus);native.ALstatuscode=etohs(actual.alstatuscode);updateSlaves();
+        if(!(native.mbx_proto&ECT_MBXPROT_COE))return error("Slave does not declare CoE support");
+        if(native.state!=EC_STATE_PRE_OP)return error("Online SDO dictionary discovery requires confirmed PRE-OP.");
+        if(!(native.CoEdetails&ECT_COEDET_SDOINFO))return error("Slave does not declare SDO Information support.");
+        const auto dictionary=sdo_discovery::read(context_.get(),uint16_t(slave));
+        if(!dictionary->complete&&dictionary->objects.empty()&&view_.slaves[size_t(slave-1)].sdoDictionary)
+            return error(dictionary->status);
+        view_.slaves[size_t(slave-1)].sdoDictionary=dictionary;
+        return dictionary->complete?done(dictionary->status):error(dictionary->status);
     }
     Result readSdo(int slave,uint16_t index,uint8_t sub,int capacity) override {
         if(!validSlave(slave))return error("Select a connected slave");

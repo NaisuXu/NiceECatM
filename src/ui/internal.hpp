@@ -18,7 +18,7 @@ struct Ui {
     bool initialized=false, chinese=false, awaiting=false, allStates=true, languageOverride=false;
     bool sdoHex=false, autoScroll=true;
     Connection config;
-    int selected=0, regLength=2;
+    int selected=0, requestedSlave=0, regLength=2;
     int sdoType=13, sdoCapacity=256;
     uint64_t seenCompletion=0;
     std::set<uint64_t> requests;
@@ -63,5 +63,6 @@ void bufferPage(Controller&,const Snapshot&);void mailboxPage(const Snapshot&);
 void sdoPage(Controller&,const Snapshot&);void diagnosticsPage(const Snapshot&);
 void scriptPage(Controller&,const Snapshot&);
 void scriptTick(Controller&,const Snapshot&);
+bool scriptRunning();
 void eventLog(Controller&,const Snapshot&,float height);void consume(const Snapshot&);
 } // namespace niceecatm::workbench

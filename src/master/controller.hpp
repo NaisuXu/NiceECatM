@@ -32,6 +32,9 @@ public:
     // for a bounded history so a script task can wait for an operation without
     // polling the GUI's last-result field or touching the backend.
     bool result(uint64_t request, Result& value) const;
+    // Includes queued/canceled-but-not-yet-drained and currently executing
+    // commands. A missing bounded-history result need not mean still pending.
+    bool pending(uint64_t request) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

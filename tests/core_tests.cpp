@@ -73,6 +73,26 @@ int main() {
         const std::string utf8="\xe8\xae\xbe\xe5\xa4\x87 actual value";
         check(encodeValue(utf8,"STRING",false,bytes,error)&&decodeValue(bytes,"STRING")==utf8,"STRING bytes remain unchanged");
 
+        {
+            Slave slave;auto esi=std::make_shared<SdoDictionary>();auto live=std::make_shared<SdoDictionary>();
+            SdoObject offline;offline.index=0x2000;offline.names={{0x409,"Offline object"},{0x804,u8"参数"}};
+            SdoEntry described;described.subindex=2;described.bitLength=32;described.type="UINT32";described.accessKnown=true;described.access=0x3f;
+            described.names={{0x409,"Offline field"},{0x804,u8"字段"}};offline.entries={described};esi->objects.push_back(offline);
+            SdoObject missing;missing.index=0x1008;esi->objects.push_back(missing);
+            SdoObject online;online.index=0x2000;online.names={{0x409,"Live object"}};
+            auto actual=described;actual.dataType=0x8;actual.type="REAL32";actual.access=7;actual.names={{0x409,"Live field"}};online.entries={actual};live->objects={online};
+            slave.esiSdoDictionary=esi;slave.sdoDictionary=live;auto merged=mergedSdoObjects(slave);
+            check(merged.size()==2&&merged[0].index==0x1008&&!merged[0].online&&merged[0].esi,"ESI-only objects stay visibly unconfirmed and sorted");
+            const auto& field=merged[1].entries[0];
+            check(field.type=="REAL32"&&field.access==7&&field.online&&field.esi,"Online type and access override ESI metadata");
+            check(sdoName(field.names,false)=="Live field"&&sdoName(field.names,true)==u8"字段","ESI supplements localized descriptions without replacing live names");
+            check(esi->objects[0].entries[0].type=="UINT32"&&live->objects[0].entries[0].names.size()==1,"Dictionary merge never mutates published metadata");
+            live->objects[0].entries[0].type.clear();live->objects[0].entries[0].dataType=0xff;
+            live->objects[0].entries[0].access=0;merged=mergedSdoObjects(slave);
+            check(merged[1].entries[0].type.empty()&&merged[1].entries[0].access==0,"Unknown online encoding and explicit no-access cannot be replaced by ESI guesses");
+            check(sdoName({{0x409,"English only"}},true)=="English only","SDO English-only names remain usable in Chinese");
+            slave.esiSdoDictionary.reset();slave.sdoDictionary.reset();check(mergedSdoObjects(slave).empty(),"Missing dictionaries do not invent standard objects");
+        }
         auto backend=makeSimulation();Connection connection;connection.primary="sim-primary";
         check(backend->scan(connection).ok,"Simulation scans");
         for(const int cycle: {5000,20000,50000,100000}) {
@@ -90,6 +110,13 @@ int main() {
         check(!backend->writeOutput(5,18,{1,2}).ok&&backend->snapshot().slaves[4].outputs==out,"Out-of-range raw write is atomic");
         check(backend->readSdo(4,0x1000,0,4).ok,"CoE fixture supports SDO reads");
         check(!backend->readSdo(5,0x1000,0,4).ok,"Pure PDO fixture does not advertise CoE");
+        check(!backend->readSdoDictionary(5).ok,"Pure PDO fixture cannot expose an SDO dictionary");
+        check(backend->readSdoDictionary(4).ok,"PRE-OP CoE fixture discovers its dictionary");
+        const auto dictionary=backend->snapshot().slaves[3].sdoDictionary;
+        check(dictionary&&dictionary->complete&&dictionary->objects.size()==4,"Simulated dictionary describes implemented objects");
+        for(const auto& object:dictionary->objects)for(const auto& entry:object.entries)
+            check(backend->readSdo(4,object.index,entry.subindex,256).ok,"Every simulated dictionary entry has a readable device response");
+        check(backend->snapshot().slaves[3].sdoDictionary==dictionary,"Service reads retain the same immutable dictionary");
         check(!backend->writeSdo(4,0x1008,0,{1}).ok,"Read-only SDO rejected");
         check(backend->writeSdo(4,0x8000,0x11,{0xe2,4}).ok&&backend->readSdo(4,0x8000,0x11,2).data==std::vector<uint8_t>({0xe2,4}),"SDO direct write / readback");
         check(backend->state(0,AlState::SafeOp).ok&&backend->snapshot().running,"SAFE-OP starts cyclic exchange automatically");
@@ -99,8 +126,10 @@ int main() {
         check(backend->state(0,AlState::Op).ok&&backend->snapshot().running,"OP begins cyclic exchange");
         backend->cycle();check(backend->snapshot().wkc==6&&backend->snapshot().slaves[4].outputs==out,"Input receive does not change output bytes");
         check(!backend->readSdo(4,0x1000,0,4).ok,"Synchronous SDO blocked during cycles");
+        check(!backend->readSdoDictionary(4).ok&&backend->snapshot().slaves[3].sdoDictionary==dictionary,"Running cycles reject discovery and retain cached descriptions");
         check(!backend->readRegister(1,0x130,2).ok,"Synchronous ESC read blocked during cycles");
         check(backend->stop().ok&&backend->snapshot().slaves[4].state==4,"Stop demotes OP to SAFE-OP");
+        check(!backend->readSdoDictionary(4).ok,"Stopped SAFE-OP does not implicitly change state for discovery");
         check(backend->state(0,AlState::PreOp).ok,"Return to PRE-OP");
         check(backend->writeRegister(4,0x800,{1,2}).ok&&!backend->snapshot().mapped,"SM write invalidates mapping");
         check(!backend->state(0,AlState::Op).ok,"Invalid mapping prevents OP");

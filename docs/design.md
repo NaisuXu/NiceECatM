@@ -57,7 +57,7 @@ Lua timers use elapsed host time. Cycle callbacks check bus cycle counters in re
 
 ## Current service limits
 
-The application implements scanning, four-state control, mapped PDO access, ESC access, manual CoE SDO, ESI display metadata and Lua automation. It does not implement FoE, EoE, SoE, VoE, BOOT workflows, full SDO Info dictionary browsing, EEPROM backup/comparison, DC SYNC trigger configuration, or per-port failover counters.
+The application implements scanning, four-state control, mapped PDO access, ESC access, CoE SDO access, bounded SDO Information discovery, ESI dictionary/display metadata and Lua automation. Dictionary descriptions are immutable and shared across snapshots; live and offline dictionaries remain separate, with online metadata taking precedence in the UI. Device values are read explicitly and cached by connection, slave and object address. It does not implement FoE, EoE, SoE, VoE, BOOT workflows, EEPROM backup/comparison, DC SYNC trigger configuration, or per-port failover counters.
 
 UI capability declarations are kept separate from implemented services. No menu or device flag establishes that a protocol path or redundancy recovery has been validated on hardware.
 

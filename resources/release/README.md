@@ -30,6 +30,8 @@ Tests on an Intel I219-LM showed lower typical receive latency. Results depend o
 
 Request **PRE-OP** before synchronous ESC register or CoE SDO access, which requires cyclic exchange to be stopped. Use **Diagnostics** and the shared **Log** to check actual states and errors; select a log entry and press **Ctrl+C** to copy it.
 
+**CoE / SDO** lists objects from a matching ESI and, when the slave supports SDO Information, discovers online descriptions in PRE-OP. Select an object to fill its address/type, then read or write explicitly. **Refresh dictionary** reloads online descriptions; it does not read all values. Sources and partial results are marked. ESI defaults are not current values; manual addresses remain available when no dictionary is provided.
+
 The target cycle defaults to **10 ms**; options are **500 us, 1, 2, 5, 10, 20, 50 and 100 ms**. Change it while disconnected, or while cyclic exchange is stopped and all slaves are in INIT/PRE-OP. Check actual timing in Diagnostics.
 
 **Disconnect before changing** hardware/simulation mode, interfaces, redundancy or mapping mode. Dual-port redundancy connects two interfaces to opposite ends of the **same slave chain**. Normal/overlapped mapping is independent of port count.
