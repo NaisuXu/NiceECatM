@@ -118,6 +118,8 @@ Writes do not require a global unlock. State, direction, size, mapping and objec
 
 Stop scripts, disconnect and select **Programming** to enable EEPROM. Open a supported ESI device description or SII BIN; preparing/exporting an image works without a connection. Select one adapter and scan to INIT without PDO mapping, then choose the physical target in the left topology. **Read & save** reads its EEPROM. **Program EEPROM** confirms the target, image and capacity, writes the prepared image including Alias/Serial and padding, then compares the full readback. Vendor ID/Product Code changes are shown and allowed; matching identifiers do not prove hardware compatibility. Capacity from SII is a declaration, not a physical measurement. See [image support and validation](esi.md#eeprom-images).
 
+Use **Export ESI** to save a basic ESI XML from the loaded image or a validated EEPROM read; it works offline. ESI export includes only EEPROM/SII data and cannot recover the full object dictionary or initialization commands.
+
 Cancelling after writing starts may leave a partial image; there is no rollback. The mode remains Programming. Follow the device's reload or power-cycle requirements, disconnect, select Hardware and scan again for normal I/O; OP is not resumed automatically.
 
 ## CLI
@@ -132,8 +134,9 @@ Cancelling after writing starts may leave a partial image; there is no rollback.
 ./dist/windows-x64/NiceECatM.exe --programming-scan --interface "<adapter name>"
 ./dist/windows-x64/NiceECatM.exe --eeprom-read backup.bin --slave 1 --interface "<adapter name>"
 ./dist/windows-x64/NiceECatM.exe --sii-export device.xml --esi-device 0 --output device.bin
+./dist/windows-x64/NiceECatM.exe --esi-export backup.bin --output device.xml
 ```
 
-CLI operations return JSON. Hardware operations require an explicitly selected adapter. Ordinary operations scan/configure before the requested operation and close the backend afterwards; the CLI is not a persistent cyclic runner. `--programming-scan` and `--eeprom-read` use the dedicated INIT inventory path without PDO mapping. `--sii-export` is offline. Options include `--secondary NAME`, `--overlap` and `--cycle-us`. GUI language can be selected with `--language en` or `--language zh-CN`; `--esi-image file.xml` (or `file.bin`) opens the offline Programming page without scanning or opening a capture connection.
+CLI operations return JSON. Hardware operations require an explicitly selected adapter. Ordinary operations scan/configure before the requested operation and close the backend afterwards; the CLI is not a persistent cyclic runner. `--programming-scan` and `--eeprom-read` use the dedicated INIT inventory path without PDO mapping. `--sii-export` (ESI to BIN) and `--esi-export` (BIN to basic ESI) are offline. Options include `--secondary NAME`, `--overlap` and `--cycle-us`. GUI language can be selected with `--language en` or `--language zh-CN`; `--esi-image file.xml` (or `file.bin`) opens the offline Programming page without scanning or opening a capture connection.
 
 See [validation](native-validation.md) for reproducible checks and [architecture](design.md) for implemented boundaries.

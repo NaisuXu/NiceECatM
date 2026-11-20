@@ -12,7 +12,7 @@
 static int runApplication(int argc, char** argv) {
     bool cli=false;
     for(int i=1;i<argc;++i) {
-        if(!std::strcmp(argv[i],"--help") || !std::strcmp(argv[i],"--adapters") || !std::strcmp(argv[i],"--scan") || !std::strcmp(argv[i],"--read-register") || !std::strcmp(argv[i],"--sdo-read") || !std::strcmp(argv[i],"--state") || !std::strcmp(argv[i],"--programming-scan") || !std::strcmp(argv[i],"--eeprom-read") || !std::strcmp(argv[i],"--sii-export")) cli=true;
+        if(!std::strcmp(argv[i],"--help") || !std::strcmp(argv[i],"--adapters") || !std::strcmp(argv[i],"--scan") || !std::strcmp(argv[i],"--read-register") || !std::strcmp(argv[i],"--sdo-read") || !std::strcmp(argv[i],"--state") || !std::strcmp(argv[i],"--programming-scan") || !std::strcmp(argv[i],"--eeprom-read") || !std::strcmp(argv[i],"--sii-export") || !std::strcmp(argv[i],"--esi-export")) cli=true;
     }
     try {
         if(cli) return runCli(argc,argv);

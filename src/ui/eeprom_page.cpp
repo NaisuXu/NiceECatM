@@ -17,7 +17,7 @@
 
 namespace niceecatm::workbench {
 namespace {
-enum class FileAction { OpenEsi, OpenBin, Export, SaveRead };
+enum class FileAction { OpenEsi, OpenBin, ExportBin, ExportEsi, SaveRead };
 struct FileSelection {
     FileAction action;
     std::string path,error;
@@ -75,7 +75,7 @@ void chooseFile(FileAction action,const char* defaultName=nullptr,std::vector<ui
     request->location=defaultName?std::string(defaultName):(page.source.empty()?(executableDirectory()/"esi").u8string():page.source.u8string());
     if(action==FileAction::OpenEsi||action==FileAction::OpenBin)
         SDL_ShowOpenFileDialog(fileSelected,request,window,action==FileAction::OpenEsi?esiFilter:binFilter,action==FileAction::OpenEsi?1:2,request->location.c_str(),false);
-    else SDL_ShowSaveFileDialog(fileSelected,request,window,binFilter,2,request->location.c_str());
+    else SDL_ShowSaveFileDialog(fileSelected,request,window,action==FileAction::ExportEsi?esiFilter:binFilter,action==FileAction::ExportEsi?1:2,request->location.c_str());
 }
 void error(Controller& controller,const std::string& message) {
     page.error=message;controller.appendLog("EEPROM: "+message,true);
@@ -84,7 +84,7 @@ bool rawSave(const std::filesystem::path& path,const std::vector<uint8_t>& bytes
     std::ofstream output(path,std::ios::binary|std::ios::trunc);
     if(!output){detail="Cannot open the selected output file.";return false;}
     output.write(reinterpret_cast<const char*>(bytes.data()),static_cast<std::streamsize>(bytes.size()));output.close();
-    if(!output){detail="The EEPROM file could not be saved completely.";return false;}
+    if(!output){detail="The selected file could not be saved completely.";return false;}
     return true;
 }
 void loadEsiDevice(Controller& controller,int index) {
@@ -175,11 +175,23 @@ void imageCard(Controller& controller,const Snapshot& s,float width,float height
     ImGui::BeginDisabled(frozen);
     if(ImGui::Button(tr("Open ESI…","打开 ESI…")))chooseFile(FileAction::OpenEsi);
     ImGui::SameLine();if(ImGui::Button(tr("Open BIN…","打开 BIN…")))chooseFile(FileAction::OpenBin);
-    ImGui::SameLine();
-    const float exportWidth=ImGui::CalcTextSize(tr("Export BIN…","导出 BIN…")).x+14;
-    const float exportX=std::max(ImGui::GetCursorPosX(),ImGui::GetContentRegionMax().x-exportWidth);ImGui::SetCursorPosX(exportX);
+    const float exportWidth=ImGui::CalcTextSize(tr("Export BIN…","导出 BIN…")).x+ImGui::CalcTextSize(tr("Export ESI…","导出 ESI…")).x+28+ImGui::GetStyle().ItemSpacing.x;
+    const float exportX=ImGui::GetContentRegionMax().x-exportWidth;
+    const float nextX=ImGui::GetItemRectMax().x-ImGui::GetWindowPos().x+ImGui::GetStyle().ItemSpacing.x;
+    // Keep export actions together; on a narrow card put them on the next row.
+    if(exportX>=nextX)ImGui::SameLine();
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorStartPos().x,exportX));
     ImGui::BeginDisabled(!page.image);
-    if(ImGui::Button(tr("Export BIN…","导出 BIN…"))){const auto filename=page.source.stem().u8string()+".eeprom.bin";chooseFile(FileAction::Export,filename.c_str(),page.image->bytes);}
+    if(ImGui::Button(tr("Export BIN…","导出 BIN…"))){const auto filename=page.source.stem().u8string()+".eeprom.bin";chooseFile(FileAction::ExportBin,filename.c_str(),page.image->bytes);}
+    ImGui::SameLine();
+    if(ImGui::Button(tr("Export ESI…","导出 ESI…"))){
+        std::string xml,detail;
+        if(!sii::toEsi(*page.image,xml,detail))error(controller,detail);
+        else {
+            const auto filename=page.source.stem().u8string()+".sii.xml";
+            chooseFile(FileAction::ExportEsi,filename.c_str(),std::vector<uint8_t>(xml.begin(),xml.end()));
+        }
+    }
     ImGui::EndDisabled();ImGui::EndDisabled();
     ImGui::Spacing();
     if(!page.source.empty()) {
@@ -206,6 +218,7 @@ void imageCard(Controller& controller,const Snapshot& s,float width,float height
         }
         ImGui::Spacing();message(tr("SII structure and configuration CRC are valid.","SII 结构与配置区 CRC 有效。"),green);
         if(image.sourceBytes<image.bytes.size())message(tr("Unused image bytes are explicitly padded with FF.","镜像未使用的字节已明确填充为 FF。"),muted);
+        message(tr("ESI export includes only EEPROM/SII data and cannot recover the full object dictionary or initialization commands.","导出 ESI 仅包含 EEPROM/SII 中已有的信息，无法还原完整对象字典和初始化命令。"),muted);
         ImGui::Spacing();ImGui::Separator();
         if(ImGui::TreeNode(tr("Image details","镜像详情"))){
             for(const auto& category:image.categories)ImGui::Text("%s  @ %s  · %zu B",hexNumber(category.type,4).c_str(),hexNumber(category.offset,4).c_str(),category.bytes);
@@ -382,9 +395,16 @@ void eepromTick(Controller& controller,const Snapshot& snapshot) {
                 if(!sii::loadBin(path,image,detail)){error(controller,detail);continue;}
                 page.image=std::move(image);page.error.clear();controller.appendLog("EEPROM image loaded: "+path.filename().u8string());selectUniqueImageMatch(snapshot);
             }else{
+                if(selection.action==FileAction::ExportEsi){
+                    std::error_code sameFileError;
+                    if(std::filesystem::equivalent(page.source,path,sameFileError)){
+                        error(controller,"The exported ESI must not overwrite the source image.");continue;
+                    }
+                }
                 std::string detail;
                 if(!rawSave(path,selection.bytes,detail)){error(controller,detail);continue;}
-                page.error.clear();controller.appendLog(std::string(selection.action==FileAction::SaveRead?"EEPROM read saved: ":"EEPROM image exported: ")+path.filename().u8string()+" ("+std::to_string(selection.bytes.size())+" bytes)");
+                if(selection.action==FileAction::SaveRead)page.source=path;
+                page.error.clear();controller.appendLog(std::string(selection.action==FileAction::SaveRead?"EEPROM read saved: ":selection.action==FileAction::ExportEsi?"ESI description exported: ":"EEPROM image exported: ")+path.filename().u8string()+" ("+std::to_string(selection.bytes.size())+" bytes)");
             }
         }catch(const std::exception& exception){error(controller,exception.what());}
     }
@@ -394,7 +414,17 @@ void eepromTick(Controller& controller,const Snapshot& snapshot) {
         if(controller.result(page.ticket,result)){
             ui.requests.erase(page.ticket);page.ticket=0;page.cancelRequested=false;
             if(!result.ok)page.error=result.message;
-            if(result.ok&&page.reading){chooseFile(FileAction::SaveRead,"EEPROM-read.bin",std::move(result.data));}
+            if(result.ok&&page.reading){
+                // A read replaces the prepared image, even when its raw bytes
+                // are not a valid SII image. Keep that raw read saveable.
+                page.source=std::filesystem::path("EEPROM-read.bin");page.devices.clear();page.device=0;page.image.reset();
+                sii::Image image;std::string detail;
+                if(sii::fromBin(result.data,image,detail)){
+                    page.image=std::move(image);page.error.clear();
+                    controller.appendLog("EEPROM read loaded for image export.");
+                }else error(controller,"EEPROM read is not a valid SII image; save the raw BIN to inspect it. | "+detail);
+                chooseFile(FileAction::SaveRead,"EEPROM-read.bin",std::move(result.data));
+            }
             page.reading=false;
         }
     }

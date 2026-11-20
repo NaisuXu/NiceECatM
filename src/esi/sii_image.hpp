@@ -28,6 +28,10 @@ bool fromEsi(const std::filesystem::path&,size_t ordinal,Image&,std::string& err
 bool fromBin(const std::vector<uint8_t>&,Image&,std::string& error);
 bool loadBin(const std::filesystem::path&,Image&,std::string& error);
 bool saveBin(const std::filesystem::path&,const Image&,std::string& error);
+// Export only information encoded in the SII, not a complete vendor ESI or a
+// byte-for-byte backup. Raw image bytes are revalidated before serialization.
+bool toEsi(const Image&,std::string& xml,std::string& error);
+bool saveEsi(const std::filesystem::path&,const Image&,std::string& error);
 // CRC-8: polynomial 0x07, initial remainder 0xFF, first 14 config bytes.
 uint8_t configCrc(const std::vector<uint8_t>&);
 } // namespace niceecatm::sii

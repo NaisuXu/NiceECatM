@@ -37,6 +37,7 @@ try {
     $eepromFixtures = @(Get-ChildItem -LiteralPath (Join-Path $isolatedRoot 'esi') -Filter '*.xml' -File)
     if ($eepromFixtures.Count -eq 0) { throw 'The release has no ESI fixtures for EEPROM smoke checks.' }
     $eepromChecks = 0
+    $esiExportChecks = 0
     foreach ($language in @('en', 'zh-CN')) {
         # Deterministic injected results; this mode performs no HTTPS requests.
         foreach ($updateState in @('available', 'current', 'unavailable')) {
@@ -78,10 +79,26 @@ try {
         if ($LASTEXITCODE -ne 0 -or !$export.ok -or (Get-Item -LiteralPath $binaryImage).Length -ne $export.bytes) {
             throw "Offline SII export failed: $($eepromFixture.Name)"
         }
+        $description = Join-Path $smokeRoot "$($eepromFixture.BaseName).generated.xml"
+        $env:NICEECATM_DISABLE_PCAP = '1'
+        $esiExport = (& $app --esi-export $binaryImage --output $description | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0 -or !$esiExport.ok -or $esiExport.vendor -ne $export.vendor -or $esiExport.product -ne $export.product -or !$esiExport.limitation) {
+            throw "Offline ESI export without capture driver failed: $($eepromFixture.Name)"
+        }
+        $env:NICEECATM_DISABLE_PCAP = $oldCapture
+        $rebuiltImage = Join-Path $smokeRoot "$($eepromFixture.BaseName).generated.bin"
+        $esiImport = (& $app --sii-export $description --output $rebuiltImage | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0 -or !$esiImport.ok -or $esiImport.vendor -ne $export.vendor -or $esiImport.product -ne $export.product) {
+            throw "Generated ESI re-import failed: $($eepromFixture.Name)"
+        }
+        ++$esiExportChecks
         foreach ($language in @('en', 'zh-CN')) {
             & $app --ui-smoke --language $language --tab eeprom --esi-image $binaryImage --frames 30
             if ($LASTEXITCODE -ne 0) { throw "Offline EEPROM BIN import smoke failed: $language / $($eepromFixture.Name)" }
             ++$eepromChecks
+            & $app --ui-smoke --language $language --tab eeprom --esi-image $description --frames 30
+            if ($LASTEXITCODE -ne 0) { throw "Generated ESI GUI import smoke failed: $language / $($eepromFixture.Name)" }
+            ++$esiExportChecks
         }
     }
     $simulation = (& $app --simulate --scan | ConvertFrom-Json)
@@ -91,7 +108,7 @@ try {
     if ($LASTEXITCODE -ne 1 -or $missingDriver.ok) { throw 'Missing driver did not produce an explicit failure.' }
     & $app --ui-smoke --frames 25 --screenshot (Join-Path $smokeRoot 'no-driver.bmp')
     if ($LASTEXITCODE -ne 0) { throw 'GUI failed without a capture driver.' }
-    Write-Output "14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics, 6 populated SDO dictionary checks, $eepromChecks offline EEPROM XML/BIN checks, simulation scan and missing-driver checks passed. No hardware scan performed."
+    Write-Output "14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics, 6 populated SDO dictionary checks, $eepromChecks offline EEPROM XML/BIN checks, $esiExportChecks basic ESI export/re-import checks, simulation scan and missing-driver checks passed. No hardware scan performed."
 } finally {
     $env:SDL_VIDEODRIVER = $oldVideo
     $env:SDL_RENDER_DRIVER = $oldRenderer

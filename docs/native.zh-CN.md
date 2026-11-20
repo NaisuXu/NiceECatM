@@ -118,6 +118,8 @@ Windows 周期调度使用高分辨率可等待定时器（waitable timer）。N
 
 停止脚本、断开连接，再选择**编程**启用 EEPROM 页面。打开支持的 ESI 设备描述或 SII BIN；未连接时也可准备／导出镜像。选择一张网卡并专用扫描至 INIT，不进行 PDO 映射，再在左侧拓扑选择物理目标。**读取并保存**读取其 EEPROM；**烧录 EEPROM**确认目标、镜像和容量后，写入包含别名、序列号及填充的完整镜像，并完整回读比较。Vendor ID／Product Code 变化会提示但允许烧录，标识相同不代表硬件配置兼容；SII 容量是声明值，不是物理实测值。镜像支持范围及校验见 [ESI 文档](esi.zh-CN.md#eeprom-镜像)。
 
+**导出 ESI**可从已加载的镜像或校验有效的 EEPROM 读取结果保存基础 ESI XML，无需连接设备。导出 ESI 仅包含 EEPROM/SII 中已有的信息，无法还原完整对象字典和初始化命令。
+
 开始写入后取消可能留下部分镜像，不会回滚，仍保持编程模式。请按设备要求重载或重新上电，再断开、选择硬件、重新扫描后使用普通 I/O，不会自动恢复 OP。
 
 ## CLI
@@ -132,8 +134,9 @@ Windows 周期调度使用高分辨率可等待定时器（waitable timer）。N
 ./dist/windows-x64/NiceECatM.exe --programming-scan --interface "<adapter name>"
 ./dist/windows-x64/NiceECatM.exe --eeprom-read backup.bin --slave 1 --interface "<adapter name>"
 ./dist/windows-x64/NiceECatM.exe --sii-export device.xml --esi-device 0 --output device.bin
+./dist/windows-x64/NiceECatM.exe --esi-export backup.bin --output device.xml
 ```
 
-CLI 操作输出 JSON，硬件操作必须明确指定网卡。普通操作先扫描配置，完成后关闭后端，不是持续周期运行器；`--programming-scan` 和 `--eeprom-read` 使用不含 PDO 映射的专用 INIT 清单路径，`--sii-export` 为离线转换。可使用 `--secondary NAME`、`--overlap`、`--cycle-us` 等选项。GUI 可用 `--language en` 或 `--language zh-CN` 指定语言；`--esi-image file.xml`（或 `file.bin`）在离线编程页面打开镜像，不扫描设备，也不打开抓包连接。
+CLI 操作输出 JSON，硬件操作必须明确指定网卡。普通操作先扫描配置，完成后关闭后端，不是持续周期运行器；`--programming-scan` 和 `--eeprom-read` 使用不含 PDO 映射的专用 INIT 清单路径，`--sii-export`（ESI 转 BIN）和 `--esi-export`（BIN 转基础 ESI）均为离线转换。可使用 `--secondary NAME`、`--overlap`、`--cycle-us` 等选项。GUI 可用 `--language en` 或 `--language zh-CN` 指定语言；`--esi-image file.xml`（或 `file.bin`）在离线编程页面打开镜像，不扫描设备，也不打开抓包连接。
 
 复现检查见[验证文档](native-validation.zh-CN.md)，实现边界见[架构文档](design.zh-CN.md)。

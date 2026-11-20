@@ -57,6 +57,8 @@ The left selector offers **Simulation / Hardware / Programming**, defaulting to 
 
 `NiceECatM --esi-image file.xml` (or `file.bin`) opens the image in the offline Programming page without scanning or opening a capture connection.
 
+**Export ESI** generates a basic ESI XML from a loaded image or a validated EEPROM read. ESI export includes only EEPROM/SII data and cannot recover the full object dictionary or initialization commands.
+
 English is the default UI language. The language preference is stored in `preferences.ini` beside the executable. Scripts live in the adjacent `scripts/` directory. Build-time versions use `yyyymmddhhmm` consistently in the UI, CLI help and Windows file properties.
 
 Click the version at the upper right to open [GitHub Releases](https://github.com/NaisuXu/NiceECatM/releases). Each desktop launch checks the latest stable release once in the background. A newer release adds a small **New version** link; all other results stay in the version tooltip, with no popups or Log messages. Updates are downloaded and installed manually.

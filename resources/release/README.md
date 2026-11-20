@@ -47,6 +47,8 @@ For signal descriptions, put matching manufacturer ESI XML files in `esi/`, rest
 3. **Read & save** reads the selected EEPROM. If its size is unknown, enter a bounded length suitable for the hardware.
 4. **Program EEPROM** asks you to confirm the target, image and capacity, then writes the prepared image, including Alias/Serial and its padding, and compares the full readback. Different Vendor IDs or Product Codes are allowed and shown in this confirmation; matching identifiers alone do not prove hardware compatibility. The displayed SII capacity is a declaration, not a physical measurement.
 
+**Export ESI** saves a basic ESI XML from a loaded image or a validated EEPROM read, without connecting. ESI export includes only EEPROM/SII data and cannot recover the full object dictionary or initialization commands. Keep the original BIN as the EEPROM backup.
+
 Cancelling after a write starts can leave a partially programmed EEPROM; there is no rollback. Completion, failure and cancellation retain Programming mode. Follow the device's reload or power-cycle procedure; to resume normal operation, disconnect, choose **Hardware**, scan to PRE-OP and request OP as needed. OP is never restored automatically.
 
 ## Lua scripts

@@ -8,9 +8,11 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace niceecatm::sii {
@@ -287,6 +289,78 @@ Image build(const Document& xml,size_t ordinal){
     result.push_back(0xff);result.push_back(0xff);if(result.size()>capacity)fail("Generated SII categories exceed the declared EEPROM capacity");
     Image image;validate(result,image);return image;
 }
+std::string hexValue(uint32_t value,unsigned width=4){std::ostringstream stream;stream<<"#x"<<std::uppercase<<std::hex<<std::setfill('0')<<std::setw(width)<<value;return stream.str();}
+std::string hexBytes(const Bytes& bytes,size_t offset,size_t count){std::ostringstream stream;stream<<std::uppercase<<std::hex<<std::setfill('0');for(size_t n=offset;n<offset+count;++n)stream<<std::setw(2)<<unsigned(bytes.at(n));return stream.str();}
+// SII BIN import preserves arbitrary bytes. XML export must additionally reject
+// invalid UTF-8 and characters forbidden in XML 1.0 instead of changing names.
+void checkXmlString(const std::string& value){
+    for(size_t n=0;n<value.size();){
+        const auto c=static_cast<unsigned char>(value[n++]);uint32_t code=c,minimum=0;unsigned remaining=0;
+        if(c>=0x80){if(c>=0xc2&&c<=0xdf){remaining=1;code=c&31;minimum=0x80;}else if(c>=0xe0&&c<=0xef){remaining=2;code=c&15;minimum=0x800;}else if(c>=0xf0&&c<=0xf4){remaining=3;code=c&7;minimum=0x10000;}else fail("SII string is not valid XML 1.0 UTF-8");}
+        if(remaining>value.size()-n)fail("SII string is not valid XML 1.0 UTF-8");
+        while(remaining--){const auto next=static_cast<unsigned char>(value[n++]);if((next&0xc0)!=0x80)fail("SII string is not valid XML 1.0 UTF-8");code=(code<<6)|(next&63);}
+        if(code<minimum||code>0x10ffff||(code>=0xd800&&code<=0xdfff)||code==0xfffe||code==0xffff||(code<32&&code!=9&&code!=10&&code!=13))fail("SII string is not valid XML 1.0 UTF-8");
+    }
+}
+const char* exportType(uint8_t code,unsigned bits){
+    static const std::map<uint8_t,const char*> names={{1,"BOOL"},{2,"SINT"},{3,"INT"},{4,"DINT"},{5,"USINT"},{6,"UINT"},{7,"UDINT"},{8,"REAL"},{9,"STRING"},{10,"OCTET_STRING"},{11,"UNICODE_STRING"},{16,"INT24"},{17,"LREAL"},{18,"INT40"},{19,"INT48"},{20,"INT56"},{21,"LINT"},{22,"UINT24"},{24,"UINT40"},{25,"UINT48"},{26,"UINT56"},{27,"ULINT"},{45,"BITARR8"},{46,"BITARR16"},{47,"BITARR32"},{48,"BIT"},{49,"BIT2"},{50,"BIT3"},{51,"BIT4"},{52,"BIT5"},{53,"BIT6"},{54,"BIT7"},{55,"BIT8"}};
+    const auto type=names.find(code);if(type==names.end())fail("Cannot export SII PDO data type: "+hexValue(code));
+    dataType(type->second,bits);return type->second;
+}
+std::string exportEsi(const Image& source){
+    Image image;validate(source.bytes,image);const auto& b=image.bytes;
+    auto category=[&](uint16_t kind)->const Category*{for(const auto& c:image.categories)if(c.type==kind)return &c;return nullptr;};
+    std::vector<std::string> strings;
+    if(const auto* c=category(10)){size_t n=c->offset+1;for(unsigned i=0;i<b[c->offset];++i){const auto length=b[n++];strings.emplace_back(b.begin()+n,b.begin()+n+length);checkXmlString(strings.back());n+=length;}}
+    auto string=[&](uint8_t ref)->std::string{return ref?strings.at(ref-1):std::string{};};
+    const auto* general=category(30);const size_t gen=general?general->offset:0;
+    auto typeName=general?string(b[gen+2]):std::string{};
+    auto displayName=general?string(b[gen+3]):std::string{};
+    auto groupName=general?string(b[gen]):std::string{};
+    const bool generatedNames=typeName.empty()||groupName.empty();
+    if(typeName.empty())typeName="SII_"+hexValue(image.product,8).substr(2)+"_"+hexValue(image.revision,8).substr(2);
+    if(displayName.empty())displayName=typeName;
+    if(groupName.empty())groupName="SII";
+    tinyxml2::XMLDocument xml;
+    xml.InsertEndChild(xml.NewDeclaration("xml version=\"1.0\" encoding=\"UTF-8\""));
+    xml.InsertEndChild(xml.NewComment("Generated from EEPROM/SII; ESI export cannot recover information absent from SII, including the complete object dictionary and initialization commands."));
+    if(generatedNames)xml.InsertEndChild(xml.NewComment("SII_ device identifiers and the SII group are generated placeholders where the EEPROM has no corresponding name."));
+    xml.InsertEndChild(xml.NewComment("This basic ESI is not a byte-for-byte EEPROM backup; retain the original BIN for restoration."));
+    auto add=[&](Element* parent,const char* name,const std::string& value=std::string{})->Element*{auto* e=xml.NewElement(name);parent->InsertEndChild(e);if(!value.empty())e->SetText(value.c_str());return e;};
+    auto* root=xml.NewElement("EtherCATInfo");root->SetAttribute("Version","1.2");xml.InsertEndChild(root);
+    auto* vendor=add(root,"Vendor");add(vendor,"Id",hexValue(image.vendor,8));
+    auto* descriptions=add(root,"Descriptions");auto* group=add(add(descriptions,"Groups"),"Group");add(group,"Type",groupName);add(group,"Name",groupName);
+    auto* device=add(add(descriptions,"Devices"),"Device");
+    if(general){std::string physics;const auto ports=get16(b,gen+16);for(unsigned n=0;n<4;++n){const auto port=(ports>>(n*4))&15;switch(port){case 0:physics+='-';break;case 1:physics+='Y';break;case 3:physics+='K';break;default:fail("Cannot export SII physical port type: "+hexValue(port));}}while(!physics.empty()&&physics.back()=='-')physics.pop_back();if(!physics.empty())device->SetAttribute("Physics",physics.c_str());}
+    auto* type=add(device,"Type",typeName);type->SetAttribute("ProductCode",hexValue(image.product,8).c_str());type->SetAttribute("RevisionNo",hexValue(image.revision,8).c_str());if(image.serial)type->SetAttribute("SerialNo",hexValue(image.serial,8).c_str());
+    add(device,"Name",displayName);
+    if(general&&(b[gen+11]&24)){auto* info=add(device,"Info");if(b[gen+11]&8)add(info,"IdentificationReg134","true");if(b[gen+11]&16)add(info,"IdentificationAdo",hexValue(get16(b,gen+18)));}
+    add(device,"GroupType",groupName);
+    const auto* fmmus=category(40);const auto* fmmusEx=category(42);size_t fmmuCount=fmmus?fmmus->bytes:0;
+    if(fmmusEx){const auto count=fmmusEx->bytes/3;if(!fmmus||count>fmmuCount||(count+1<fmmuCount)||(count<fmmuCount&&b[fmmus->offset+count]!=0))fail("SII extended FMMU count does not match its FMMU category");fmmuCount=count;}
+    if(fmmuCount>16)fail("Too many FMMU descriptions");
+    for(size_t n=0;n<fmmuCount;++n){const auto kind=b[fmmus->offset+n];const char* name=kind==0?"Unused":kind==1?"Outputs":kind==2?"Inputs":kind==3?"MBoxState":nullptr;if(!name)fail("Cannot export SII FMMU function: "+hexValue(kind));auto* e=add(device,"Fmmu",name);if(fmmusEx){const auto pos=fmmusEx->offset+n*3;const auto flags=b[pos];if(flags&1)e->SetAttribute("OpOnly","1");if(flags&2)e->SetAttribute("Sm",unsigned(b[pos+1]));if(flags&4)e->SetAttribute("Su",unsigned(b[pos+2]));}}
+    std::vector<uint8_t> smKinds;const auto* sms=category(41);
+    if(sms)for(size_t pos=sms->offset;pos<sms->offset+sms->bytes;pos+=8){const auto kind=b[pos+7],flags=b[pos+6];const char* name=kind==0?"Unused":kind==1?"MBoxOut":kind==2?"MBoxIn":kind==3?"Outputs":"Inputs";auto* e=add(device,"Sm",name);e->SetAttribute("StartAddress",hexValue(get16(b,pos)).c_str());e->SetAttribute("DefaultSize",unsigned(get16(b,pos+2)));e->SetAttribute("ControlByte",hexValue(b[pos+4],2).c_str());e->SetAttribute("Enable",(flags&1)?"1":"0");if(flags&2)e->SetAttribute("Fixed","1");if(flags&4)e->SetAttribute("Virtual","1");if(flags&8)e->SetAttribute("OpOnly","1");smKinds.push_back(kind);}
+    // Category 50 means TxPDO and 51 means RxPDO, regardless of the numeric
+    // PDO index chosen by the device vendor.
+    std::set<std::pair<uint16_t,uint16_t>> pdoIds;
+    for(const auto kind:{uint16_t(51),uint16_t(50)})for(const auto& c:image.categories)if(c.type==kind){
+        for(size_t pos=c.offset;pos<c.offset+c.bytes;){const auto index=get16(b,pos),flags=get16(b,pos+6);const auto count=b[pos+2],sm=b[pos+3];if(!index||!count)fail("Cannot export an empty or zero-index SII PDO");if(!pdoIds.insert({kind,index}).second)fail("Duplicate SII PDO index: "+hexValue(index));auto* pdo=add(device,kind==51?"RxPdo":"TxPdo");if(sm!=255){if(sm>=smKinds.size()||smKinds[sm]!=(kind==51?3:4))fail("SII PDO references a missing or incompatible SyncManager");pdo->SetAttribute("Sm",unsigned(sm));}if(flags&1)pdo->SetAttribute("Mandatory","1");if(flags&16)pdo->SetAttribute("Fixed","1");add(pdo,"Index",hexValue(index));if(b[pos+5])add(pdo,"Name",string(b[pos+5]));pos+=8;
+            for(unsigned n=0;n<count;++n,pos+=8){auto* entry=add(pdo,"Entry");const auto index=get16(b,pos);add(entry,"Index",hexValue(index));add(entry,"SubIndex",std::to_string(b[pos+2]));add(entry,"BitLen",std::to_string(b[pos+5]));if(b[pos+3])add(entry,"Name",string(b[pos+3]));if(index||b[pos+2]||b[pos+4])add(entry,"DataType",exportType(b[pos+4],b[pos+5]));}
+        }
+    }
+    const auto protocols=get16(b,56);if(protocols&~63)fail("Cannot export unsupported SII mailbox protocol flags");
+    if(protocols){
+        if(std::count(smKinds.begin(),smKinds.end(),1)!=1||std::count(smKinds.begin(),smKinds.end(),2)!=1)fail("SII mailbox configuration requires MBoxOut and MBoxIn SyncManagers for ESI export");
+        for(size_t n=0;n<smKinds.size();++n)if(smKinds[n]==1||smKinds[n]==2){const auto header=smKinds[n]==1?48:52;const auto pos=sms->offset+n*8;if(get16(b,header)!=get16(b,pos)||get16(b,header+2)!=get16(b,pos+2))fail("SII mailbox header does not match its SyncManager category");if(!get16(b,pos)||!get16(b,pos+2))fail("SII mailbox SyncManagers require nonzero addresses and sizes for ESI export");}
+        auto* mailbox=add(device,"Mailbox");const std::array<const char*,6> names{{"AoE","EoE","CoE","FoE","SoE","VoE"}};for(unsigned n=0;n<6;++n)if(protocols&(1<<n)){auto* protocol=add(mailbox,names[n]);if(n==2&&general){const std::array<const char*,5> flags{{"SdoInfo","PdoAssign","PdoConfig","PdoUpload","CompleteAccess"}};for(unsigned j=0;j<flags.size();++j)protocol->SetAttribute(flags[j],(b[gen+5]&(2<<j))?"1":"0");}}
+    }
+    Element* dc=nullptr;
+    for(const auto& c:image.categories)if(c.type==60)for(size_t pos=c.offset;pos<c.offset+c.bytes;pos+=24){if(!dc)dc=add(device,"Dc");auto* op=add(dc,"OpMode");auto name=string(b[pos+18]);if(name.empty())name="SII_DC_"+std::to_string((pos-c.offset)/24+1);add(op,"Name",name);if(b[pos+19])add(op,"Desc",string(b[pos+19]));add(op,"AssignActivate",hexValue(get16(b,pos+14)));auto* sync0=add(op,"CycleTimeSync0",std::to_string(get32(b,pos)));const auto factor0=get16(b,pos+16),factor1=get16(b,pos+12);if(factor0)sync0->SetAttribute("Factor",std::to_string(factor0>32767?int(factor0)-65536:int(factor0)).c_str());const auto shift0=get32(b,pos+4),shift1=get32(b,pos+8);add(op,"ShiftTimeSync0",std::to_string(shift0>INT32_MAX?int64_t(shift0)-0x100000000ll:int64_t(shift0)));if(factor1){auto* sync1=add(op,"CycleTimeSync1","0");sync1->SetAttribute("Factor",std::to_string(factor1>32767?int(factor1)-65536:int(factor1)).c_str());}add(op,"ShiftTimeSync1",std::to_string(shift1>INT32_MAX?int64_t(shift1)-0x100000000ll:int64_t(shift1)));}
+    auto* eeprom=add(device,"Eeprom");add(eeprom,"ByteSize",std::to_string(image.capacity));add(eeprom,"ConfigData",hexBytes(b,0,14));if(std::any_of(b.begin()+40,b.begin()+48,[](uint8_t v){return v!=0;}))add(eeprom,"BootStrap",hexBytes(b,40,8));
+    tinyxml2::XMLPrinter printer;xml.Print(&printer);return printer.CStr();
+}
 } // namespace
 uint8_t configCrc(const std::vector<uint8_t>& bytes){if(bytes.size()<14)return 0;uint8_t crc=0xff;for(size_t n=0;n<14;++n){crc^=bytes[n];for(unsigned bit=0;bit<8;++bit)crc=static_cast<uint8_t>((crc&0x80)?(crc<<1)^7:crc<<1);}return crc;}
 bool listDevices(const std::filesystem::path& path,std::vector<Device>& devices,std::string& error){try{Document xml(path);auto options=xml.options();std::vector<Device> result;for(size_t n=0;n<options.size();++n){auto display=name(options[n]);if(display.empty())display=text(options[n],"Type");result.push_back({display,n});}devices=std::move(result);error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
@@ -294,4 +368,6 @@ bool fromEsi(const std::filesystem::path& path,size_t ordinal,Image& image,std::
 bool fromBin(const std::vector<uint8_t>& bytes,Image& image,std::string& error){try{Image result;validate(bytes,result);image=std::move(result);error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
 bool loadBin(const std::filesystem::path& path,Image& image,std::string& error){try{return fromBin(read(path,MaxImage),image,error);}catch(const std::exception& e){error=e.what();return false;}}
 bool saveBin(const std::filesystem::path& path,const Image& image,std::string& error){try{Image validated;validate(image.bytes,validated);if(validated.sourceBytes!=validated.capacity)fail("Export requires a complete padded SII image");std::ofstream f(path,std::ios::binary|std::ios::trunc);if(!f)fail("Cannot create BIN file: "+path.filename().u8string());f.write(reinterpret_cast<const char*>(validated.bytes.data()),static_cast<std::streamsize>(validated.bytes.size()));f.flush();if(!f)fail("Failed to completely write BIN file: "+path.filename().u8string());error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
+bool toEsi(const Image& image,std::string& xml,std::string& error){try{auto result=exportEsi(image);xml=std::move(result);error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
+bool saveEsi(const std::filesystem::path& path,const Image& image,std::string& error){try{const auto xml=exportEsi(image);std::ofstream f(path,std::ios::binary|std::ios::trunc);if(!f)fail("Cannot create ESI file: "+path.filename().u8string());f.write(xml.data(),static_cast<std::streamsize>(xml.size()));f.flush();if(!f)fail("Failed to completely write ESI file: "+path.filename().u8string());error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
 } // namespace niceecatm::sii

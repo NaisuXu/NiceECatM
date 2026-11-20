@@ -43,6 +43,17 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"EEPROM operation cancelled; no EEPROM data was written.","EEPROM 操作已取消，尚未写入 EEPROM 数据。"},
     {"EEPROM written and fully verified; activation pending. Follow the device's reload or power-cycle procedure.","EEPROM 已写入且完整回读一致，等待生效，请按设备要求重新加载或重新上电。"},
     {"EEPROM read completed; all bytes were received successfully.","EEPROM 读取完成，全部字节均已成功接收。"},
+    {"EEPROM read loaded for image export.","EEPROM 读取结果已加载，可导出镜像。"},
+    {"EEPROM read is not a valid SII image; save the raw BIN to inspect it.","EEPROM 读取结果不是有效的 SII 镜像，可保存原始 BIN 后检查。"},
+    {"The exported ESI must not overwrite the source image.","导出的 ESI 不得覆盖原始镜像文件。"},
+    {"SII string is not valid XML 1.0 UTF-8","SII 字符串不是有效的 XML 1.0 UTF-8 文本。"},
+    {"SII extended FMMU count does not match its FMMU category","SII 扩展 FMMU 数量与 FMMU 类别不一致。"},
+    {"Cannot export an empty or zero-index SII PDO","无法导出空 PDO 或索引为零的 SII PDO。"},
+    {"SII PDO references a missing or incompatible SyncManager","SII PDO 引用了不存在或不兼容的 SyncManager。"},
+    {"Cannot export unsupported SII mailbox protocol flags","无法导出暂不支持的 SII Mailbox 协议标志。"},
+    {"SII mailbox configuration requires MBoxOut and MBoxIn SyncManagers for ESI export","导出 ESI 时，SII Mailbox 配置必须包含 MBoxOut 和 MBoxIn SyncManager。"},
+    {"SII mailbox header does not match its SyncManager category","SII Mailbox 头部配置与 SyncManager 类别不一致。"},
+    {"SII mailbox SyncManagers require nonzero addresses and sizes for ESI export","导出 ESI 时，SII Mailbox SyncManager 的地址和大小必须非零。"},
     {"Programming target SII identity changed since scanning; scan again.","编程目标的 SII 标识在扫描后发生变化，请重新扫描。"},
     {"EEPROM status read failed (WKC must be 1).","EEPROM 状态读取失败（WKC 必须为 1）。"},
     {"EEPROM busy timeout.","等待 EEPROM 空闲超时。"},
@@ -54,7 +65,7 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"EEPROM command failed (WKC must be 1).","EEPROM 命令失败（WKC 必须为 1）。"},
     {"EEPROM data read failed (WKC must be 1).","EEPROM 数据读取失败（WKC 必须为 1）。"},
     {"EEPROM write data staging failed (WKC must be 1).","EEPROM 待写入数据提交失败（WKC 必须为 1）。"},
-    {"The EEPROM file could not be saved completely.","EEPROM 文件未能完整保存。"},
+    {"The selected file could not be saved completely.","所选文件未能完整保存。"},
     {"Cannot open the selected output file.","无法打开所选输出文件。"},
     {"Stopped","已停止"}, {"Running","周期交换中"}, {"Connected","已连接"},
     {"No devices found","未发现设备"}, {"Adapter list refreshed","网卡列表已刷新"},
@@ -263,6 +274,7 @@ inline std::string withoutPeriod(std::string value) {
 inline std::string translateToolMessage(const std::string& message) {
     const auto separator=message.find(" | ");
     if(separator!=std::string::npos)return translateToolMessage(message.substr(0,separator))+message.substr(separator);
+    if(message.rfind("EEPROM: ",0)==0)return "EEPROM："+translateToolMessage(message.substr(8));
     const auto plain=withoutPeriod(message);
     static const auto exact=[](){std::unordered_map<std::string,std::string> result;for(const auto& entry:messageTranslations)result[withoutPeriod(entry.first)]=entry.second;return result;}();
     if(const auto entry=exact.find(plain);entry!=exact.end())return entry->second;
@@ -317,6 +329,13 @@ inline std::string translateToolMessage(const std::string& message) {
         {"EEPROM image loaded: ","EEPROM 镜像已加载："},
         {"EEPROM read saved: ","EEPROM 读取结果已保存："},
         {"EEPROM image exported: ","EEPROM 镜像已导出："},
+        {"ESI description exported: ","ESI 描述已导出："},
+        {"Cannot export SII PDO data type: ","无法导出的 SII PDO 数据类型："},
+        {"Duplicate SII PDO index: ","SII PDO 索引重复："},
+        {"Cannot export SII physical port type: ","无法导出的 SII 物理端口类型："},
+        {"Cannot export SII FMMU function: ","无法导出的 SII FMMU 功能："},
+        {"Cannot create ESI file: ","无法创建 ESI 文件："},
+        {"Failed to completely write ESI file: ","ESI 文件未能完整写入："},
         {"Physical wired Ethernet interfaces enumerated: ","已枚举有线物理网卡数："},
         {"Cannot open programming interface: ","无法打开编程网卡："},
         {"Network interfaces enumerated: ","已枚举网卡数："},

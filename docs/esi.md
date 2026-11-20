@@ -40,6 +40,10 @@ The native builder supports the fixed-layout features used by the bundled AX5810
 
 Modular layouts, custom PDO data types, Eeprom/Data or custom ESI categories, unsupported DC timing options and unknown image-affecting fields are rejected explicitly. Passive catalog support does not imply EEPROM-generation support. For descriptions outside this subset, import a manufacturer-provided or SSC/TwinCAT-exported BIN instead. BIN import preserves bounded unknown categories; a short image ending at a valid SII terminator is explicitly padded to its declared capacity. A valid structure or successful readback alone does not prove device-specific firmware compatibility or that a new configuration has taken effect.
 
+**Export ESI** generates a basic ESI XML from a loaded BIN, an ESI-generated image or a validated EEPROM read, without accessing the bus. It includes the identity, names and supported mailbox, SM/FMMU, PDO and DC descriptions present in SII. The offline CLI equivalent is `NiceECatM --esi-export INPUT.bin --output OUTPUT.xml`.
+
+ESI export includes only EEPROM/SII data and cannot recover the full object dictionary or initialization commands. Keep the original BIN for backup: XML does not preserve every EEPROM byte or vendor-specific region.
+
 ## Language and scope
 
 Localized names are selected when supplied. An English-only description stays English in the Chinese UI; there is no required alias or automatic translation. Original device strings and identifiers are retained.

@@ -73,6 +73,7 @@ int runCli(int argc,char**argv) {
         <<"  NiceECatM --programming-scan --interface NAME  INIT inventory without PDO mapping\n"
         <<"  NiceECatM --eeprom-read OUTPUT.bin --slave 1 --interface NAME [--length BYTES]\n"
         <<"  NiceECatM --sii-export INPUT.xml --esi-device 0 --output OUTPUT.bin  Offline only\n"
+        <<"  NiceECatM --esi-export INPUT.bin --output OUTPUT.xml  Offline basic ESI export\n"
         <<"Options: --simulate, --secondary NAME (same-bus redundancy), --overlap\n"
         <<"         --cycle-us 500|1000|2000|5000|10000|20000|50000|100000\n"
         <<"GUI smoke capture: --ui-smoke --frames 30 --screenshot PATH.bmp\n"
@@ -91,6 +92,7 @@ int runCli(int argc,char**argv) {
       else if(a=="--programming-scan"){operation="programming-scan";cfg.mode=niceecatm::ConnectionMode::Programming;}
       else if(a=="--eeprom-read"){operation="eeprom-read";outputPath=std::filesystem::u8path(value());cfg.mode=niceecatm::ConnectionMode::Programming;}
       else if(a=="--sii-export"){operation="sii-export";imagePath=std::filesystem::u8path(value());}
+      else if(a=="--esi-export"){operation="esi-export";imagePath=std::filesystem::u8path(value());}
       else if(a=="--esi-device")esiDevice=number(value(),65535);
       else if(a=="--output")outputPath=std::filesystem::u8path(value());
       else if(a=="--read-register"){operation="register";offset=number(value(),65535);}
@@ -105,6 +107,15 @@ int runCli(int argc,char**argv) {
       niceecatm::sii::Image image;std::string error;
       if(!niceecatm::sii::fromEsi(imagePath,size_t(esiDevice),image,error)||!niceecatm::sii::saveBin(outputPath,image,error))throw std::runtime_error(error);
       std::cout<<"{\"ok\":true,\"bytes\":"<<image.bytes.size()<<",\"vendor\":"<<image.vendor<<",\"product\":"<<image.product<<",\"output\":"<<quote(outputPath.u8string())<<"}\n";return 0;
+    }
+    if(operation=="esi-export") {
+      if(outputPath.empty())throw std::runtime_error("Choose an output XML with --output.");
+      std::error_code pathError;
+      if(std::filesystem::equivalent(imagePath,outputPath,pathError))throw std::runtime_error("The output XML must differ from the input BIN.");
+      niceecatm::sii::Image image;std::string error;
+      if(!niceecatm::sii::loadBin(imagePath,image,error)||!niceecatm::sii::saveEsi(outputPath,image,error))throw std::runtime_error(error);
+      std::cout<<"{\"ok\":true,\"vendor\":"<<image.vendor<<",\"product\":"<<image.product<<",\"output\":"<<quote(outputPath.u8string())
+        <<",\"limitation\":"<<quote("ESI export includes only EEPROM/SII data and cannot recover the full object dictionary or initialization commands.")<<"}\n";return 0;
     }
     const bool programming=operation=="programming-scan"||operation=="eeprom-read";
     if(programming&&cfg.mode!=niceecatm::ConnectionMode::Programming)throw std::runtime_error("Programming operations require physical Programming mode.");

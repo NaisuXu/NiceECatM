@@ -57,6 +57,8 @@ CoE / SDO 显示所选从站的对象字典，来源包括匹配的 ESI，以及
 
 `NiceECatM --esi-image file.xml`（或 `file.bin`）会在离线编程页面打开镜像，不扫描设备，也不打开抓包连接。
 
+**导出 ESI**可从已加载的镜像或校验有效的 EEPROM 读取结果生成基础 ESI XML。导出 ESI 仅包含 EEPROM/SII 中已有的信息，无法还原完整对象字典和初始化命令。
+
 界面默认英文，语言偏好保存在可执行文件旁的 `preferences.ini`，脚本保存在旁边的 `scripts/`。软件版本采用构建时间 `yyyymmddhhmm`，界面、CLI 帮助与 Windows 文件属性保持一致。
 
 点击右上角版本号可打开 [GitHub Releases](https://github.com/NaisuXu/NiceECatM/releases)。桌面程序每次启动后在后台检查一次最新正式版本，发现新版时显示小型“有新版本”链接；其它结果仅在版本号悬停提示中显示，不弹窗、不写日志。下载和安装由用户手动完成。
