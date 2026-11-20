@@ -34,9 +34,9 @@ int main() {
     try {
         Controller controller;
         Bridge bridge(controller);
-        check(waitFor([&]{return !bridge.snapshot().adapters.empty();}),"Bridge sees initial adapters");
+        check(waitFor([&]{return bridge.snapshot().status!="Ready";}),"Bridge sees initialized hardware backend");
 
-        Connection connection;connection.simulation=true;connection.primary="script-simulation";connection.cycleUs=500;
+        Connection connection;connection.mode=ConnectionMode::Simulation;connection.primary="script-simulation";connection.cycleUs=500;
         std::string error;
         ScriptRequest request;request.kind=RequestKind::Scan;request.connection=connection;
         const auto scan=bridge.submit(request,&error);check(scan!=0,"Bridge adapter admits scan");

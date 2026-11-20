@@ -14,14 +14,14 @@ inline const ImVec4 teal{.02f,.49f,.54f,1}, green{.08f,.53f,.36f,1};
 inline const ImVec4 amber{.72f,.46f,.12f,1}, red{.78f,.25f,.29f,1};
 inline const ImVec4 background{.945f,.961f,.977f,1}, line{.86f,.90f,.93f,1};
 struct Ui {
-    Ui() { config.simulation=false; }
     bool initialized=false, chinese=false, awaiting=false, allStates=true, languageOverride=false;
     bool sdoHex=false, autoScroll=true;
-    Connection config;
+    Connection config, previousModeConfig;
+    ConnectionMode pendingMode=ConnectionMode::Hardware;
     updates::Checker* updater=nullptr;
     int selected=0, requestedSlave=0, regLength=2;
     int sdoType=13, sdoCapacity=256;
-    uint64_t seenCompletion=0;
+    uint64_t seenCompletion=0, modeRequest=0;
     std::set<uint64_t> requests;
     std::filesystem::path preferences;
     std::string localError, requestedTab, activeTab="pdo";
@@ -62,6 +62,7 @@ void observeServiceResults(const Snapshot&);
 unsigned widthFor(const std::string&);
 void bufferPage(Controller&,const Snapshot&);void mailboxPage(const Snapshot&);
 void sdoPage(Controller&,const Snapshot&);void diagnosticsPage(const Snapshot&);
+void eepromPage(Controller&,const Snapshot&);void eepromTick(Controller&,const Snapshot&);
 void scriptPage(Controller&,const Snapshot&);
 void scriptTick(Controller&,const Snapshot&);
 bool scriptRunning();

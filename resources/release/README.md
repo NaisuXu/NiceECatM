@@ -36,9 +36,18 @@ Request **PRE-OP** before synchronous ESC register or CoE SDO access, which requ
 
 The target cycle defaults to **10 ms**; options are **500 us, 1, 2, 5, 10, 20, 50 and 100 ms**. Change it while disconnected, or while cyclic exchange is stopped and all slaves are in INIT/PRE-OP. Check actual timing in Diagnostics.
 
-**Disconnect before changing** hardware/simulation mode, interfaces, redundancy or mapping mode. Dual-port redundancy connects two interfaces to opposite ends of the **same slave chain**. Normal/overlapped mapping is independent of port count.
+**Disconnect before changing** Simulation / Hardware / Programming mode, interfaces, redundancy or mapping mode. Stop scripts before changing modes. Dual-port redundancy connects two interfaces to opposite ends of the **same slave chain**. Normal/overlapped mapping is independent of port count.
 
 For signal descriptions, put matching manufacturer ESI XML files in `esi/`, restart and scan again. English-only device names remain English in the Chinese UI.
+
+## EEPROM programming
+
+1. Stop scripts, disconnect, choose **Programming** on the left, select one interface and **Scan**. This scan confirms **INIT** without PDO mapping and can enumerate blank SII devices. Select the physical target in the left topology.
+2. The **EEPROM** page is enabled only in **Programming**. Use **Open ESI** and choose its device description, or **Open BIN**. Preparation and BIN export work before connecting. ESI generation supports the supplied AX58100/LAN9252 fixed-device features; unsupported layouts are rejected. A display-compatible ESI is not necessarily supported for image generation.
+3. **Read & save** reads the selected EEPROM. If its size is unknown, enter a bounded length suitable for the hardware.
+4. **Program EEPROM** asks you to confirm the target, image and capacity, then writes the prepared image, including Alias/Serial and its padding, and compares the full readback. Different Vendor IDs or Product Codes are allowed and shown in this confirmation; matching identifiers alone do not prove hardware compatibility. The displayed SII capacity is a declaration, not a physical measurement.
+
+Cancelling after a write starts can leave a partially programmed EEPROM; there is no rollback. Completion, failure and cancellation retain Programming mode. Follow the device's reload or power-cycle procedure; to resume normal operation, disconnect, choose **Hardware**, scan to PRE-OP and request OP as needed. OP is never restored automatically.
 
 ## Lua scripts
 
@@ -66,7 +75,7 @@ The packaged examples have different effects:
 
 | File | Behavior |
 | --- | --- |
-| `Example_01_Full_Lifecycle.lua` | Start disconnected; enumerates real adapters, uses the first one and current redundancy/mapping settings, scans, inspects devices, enters OP, returns to PRE-OP and disconnects; adjust its connection options for your bus |
+| `Example_01_Full_Lifecycle.lua` | Select Hardware and start disconnected; enumerates real adapters, uses the first one and current redundancy/mapping settings, scans, inspects devices, enters OP, returns to PRE-OP and disconnects; adjust its connection options for your bus |
 | `Example_02_Signal_Inspection.lua` | Requires a connected, mapped bus; inspects signals, reads input values from the current process image and finishes; stopped I/O gives cached values |
 | `Example_03_Cycle_Automation.lua` | Requires running cyclic I/O; reports every ten observed cycles plus a periodic heartbeat; continues until stopped |
 | `Example_04_Output_Write_Test.lua` | Requires a mapped connection and a writable output; writes zero to the first output found, then finishes; check that target before running |

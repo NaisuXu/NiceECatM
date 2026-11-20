@@ -27,11 +27,13 @@ bus:disconnect()
 
 `ecat.current()` attaches a Lua handle to the workbench connection. `ecat.open(options)` copies the current connection settings and overrides supplied options; it creates a handle without scanning. Options are `interface` (or `primary`), `secondary`, `redundant`, `overlap`, `simulation` and `cycle_us`.
 
+Select **Simulation** or **Hardware** before running a script. Mode changes require stopped scripts and a disconnected bus; Programming mode does not run scripts. For the hardware lifecycle example, select Hardware first. For the hardware-free example above, select Simulation first. Adapter enumeration returns physical interface metadata without changing the selected mode or disconnecting a bus.
+
 Bus operations wait for their host result before returning. They raise a Lua error on failure; no `await` wrapper is required.
 
 | API | Behavior |
 | --- | --- |
-| `ecat.adapters()` | Enumerates physical wired interfaces, returning `name` and `description`; selects the hardware backend when necessary and does not scan slaves |
+| `ecat.adapters()` | Enumerates physical wired interfaces, returning `name` and `description`; does not switch modes, open a bus or scan slaves |
 | `ecat.current()` | Gets a handle using the current workbench connection settings |
 | `ecat.open(options)` | Gets a handle with explicit connection-setting overrides |
 | `bus:scan()` | Configures/maps slaves, leaves PRE-OP, returns an array of `position`, `name`, `state`, `dc` |
@@ -52,7 +54,7 @@ Bus operations wait for their host result before returning. They raise a Lua err
 
 Slave positions start at 1. Use `"all"` for an explicit bus-wide state request. Cycle periods are in microseconds: 500, 1000, 2000, 5000, 10000, 20000, 50000 or 100000.
 
-`bus:status()` returns `connected`, `mapped`, `running`, `busy`, `generation`, `cycles`, `wkc`, `expected_wkc`, `slaves` (a count), `state` and `status`. Signal descriptors contain `name`, `input`, `type`, `bit_offset`, `bit_length`, `index` and `subindex`.
+`bus:status()` returns `mode` (`simulation`, `hardware` or `programming`), `connected`, `mapped`, `running`, `busy`, `generation`, `cycles`, `wkc`, `expected_wkc`, `slaves` (a count), `state` and `status`. Signal descriptors contain `name`, `input`, `type`, `bit_offset`, `bit_length`, `index` and `subindex`.
 
 Signal names and object addresses are device-specific. Inspect the descriptors instead of assuming an ESI name such as Input is unique:
 

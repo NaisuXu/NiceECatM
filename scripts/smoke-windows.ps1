@@ -34,6 +34,9 @@ try {
     }
     $env:SDL_VIDEODRIVER = 'dummy'
     $env:SDL_RENDER_DRIVER = 'software'
+    $eepromFixtures = @(Get-ChildItem -LiteralPath (Join-Path $isolatedRoot 'esi') -Filter '*.xml' -File)
+    if ($eepromFixtures.Count -eq 0) { throw 'The release has no ESI fixtures for EEPROM smoke checks.' }
+    $eepromChecks = 0
     foreach ($language in @('en', 'zh-CN')) {
         # Deterministic injected results; this mode performs no HTTPS requests.
         foreach ($updateState in @('available', 'current', 'unavailable')) {
@@ -61,6 +64,24 @@ try {
             $dictionaryCapture = Join-Path $smokeRoot "$language-sdo-populated-$($size[0])x$($size[1]).bmp"
             & $app --ui-smoke --language $language --tab sdo --device 4 --width $size[0] --height $size[1] --frames 40 --screenshot $dictionaryCapture
             if ($LASTEXITCODE -ne 0) { throw "Populated SDO dictionary smoke failed: $language / $size" }
+            foreach ($eepromFixture in $eepromFixtures) {
+                $imageCapture = Join-Path $smokeRoot "$language-eeprom-$($eepromFixture.BaseName)-$($size[0])x$($size[1]).bmp"
+                & $app --ui-smoke --language $language --tab eeprom --esi-image $eepromFixture.FullName --width $size[0] --height $size[1] --frames 30 --screenshot $imageCapture
+                if ($LASTEXITCODE -ne 0) { throw "Offline EEPROM image/layout smoke failed: $language / $($eepromFixture.Name) / $size" }
+                ++$eepromChecks
+            }
+        }
+    }
+    foreach ($eepromFixture in $eepromFixtures) {
+        $binaryImage = Join-Path $smokeRoot "$($eepromFixture.BaseName).bin"
+        $export = (& $app --sii-export $eepromFixture.FullName --output $binaryImage | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0 -or !$export.ok -or (Get-Item -LiteralPath $binaryImage).Length -ne $export.bytes) {
+            throw "Offline SII export failed: $($eepromFixture.Name)"
+        }
+        foreach ($language in @('en', 'zh-CN')) {
+            & $app --ui-smoke --language $language --tab eeprom --esi-image $binaryImage --frames 30
+            if ($LASTEXITCODE -ne 0) { throw "Offline EEPROM BIN import smoke failed: $language / $($eepromFixture.Name)" }
+            ++$eepromChecks
         }
     }
     $simulation = (& $app --simulate --scan | ConvertFrom-Json)
@@ -70,7 +91,7 @@ try {
     if ($LASTEXITCODE -ne 1 -or $missingDriver.ok) { throw 'Missing driver did not produce an explicit failure.' }
     & $app --ui-smoke --frames 25 --screenshot (Join-Path $smokeRoot 'no-driver.bmp')
     if ($LASTEXITCODE -ne 0) { throw 'GUI failed without a capture driver.' }
-    Write-Output '14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics and 6 populated SDO dictionary layout checks, simulation scan and missing-driver checks passed. No hardware scan performed.'
+    Write-Output "14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics, 6 populated SDO dictionary checks, $eepromChecks offline EEPROM XML/BIN checks, simulation scan and missing-driver checks passed. No hardware scan performed."
 } finally {
     $env:SDL_VIDEODRIVER = $oldVideo
     $env:SDL_RENDER_DRIVER = $oldRenderer

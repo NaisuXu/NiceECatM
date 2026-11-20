@@ -3,6 +3,7 @@
 
 #include "master/controller.hpp"
 #include "esi/catalog.hpp"
+#include "esi/sii_image.hpp"
 #include "platform/paths.hpp"
 #include <algorithm>
 #include <atomic>
@@ -100,6 +101,9 @@ struct Controller::Impl {
     uint64_t activeRequest=0;
     Snapshot published,current,scriptPublished;
     std::atomic<bool> scriptSnapshots{false};
+    std::atomic<bool> scriptRunning{false},cancelActive{false},shutdown{false};
+    bool activeEeprom=false;
+    EepromProgress eeprom;
     Result lastResult;
     std::map<uint64_t,Result> resultHistory;
     std::vector<LogEntry> logs;
@@ -114,7 +118,7 @@ struct Controller::Impl {
     Snapshot library;
     bool descriptionDirty=true,descriptionMapped=false;
     uint64_t descriptionGeneration=0;
-    bool simulation=true;
+    ConnectionMode mode=ConnectionMode::Hardware;
     uint64_t cycles=0,missed=0;
     double actualCycle=0,maxJitter=0;
     Clock::time_point nextCycle{},previousCycle{},nextPublication{};
@@ -125,6 +129,7 @@ struct Controller::Impl {
         worker=std::thread([this]{run();});
     }
     ~Impl() {
+        shutdown.store(true);cancelActive.store(true);
         {std::lock_guard<std::mutex> lock(mutex);quitting=true;}
         notify();if(worker.joinable())worker.join();
     }
@@ -166,10 +171,20 @@ struct Controller::Impl {
     void publish(bool busy=false) {
         for(const auto& notice:backend->takeDiagnostics())log(notice);
         current=backend->snapshot();
+        current.connection.mode=mode;current.simulation=mode==ConnectionMode::Simulation;
+        current.eeprom=eeprom;
         // ESI matching is static until scan/import/invalidation. Do it while
         // stopped, then only copy the resulting metadata into live snapshots.
         // A cyclic publication must not search a potentially large XML catalog.
-        if(descriptionDirty||descriptionGeneration!=generation||descriptionMapped!=current.mapped||descriptions.size()!=current.slaves.size()) {
+        if(mode==ConnectionMode::Programming) {
+            descriptions.clear();library={};
+            current.esiDirectory.clear();current.esiStatus.clear();current.esiFiles=current.esiDevices=0;
+            for(auto& slave:current.slaves) {
+                slave.pdoEntries.clear();slave.esiFile.clear();slave.esiStatus.clear();
+                slave.sdoDictionary.reset();slave.esiSdoDictionary.reset();
+            }
+            descriptionDirty=true;
+        } else if(descriptionDirty||descriptionGeneration!=generation||descriptionMapped!=current.mapped||descriptions.size()!=current.slaves.size()) {
             esi.decorate(current);
             descriptions.clear();descriptions.reserve(current.slaves.size());
             for(const auto& slave:current.slaves)descriptions.push_back({slave.pdoEntries,slave.esiFile,slave.esiStatus,slave.esiSdoDictionary});
@@ -195,6 +210,7 @@ struct Controller::Impl {
     void publishScriptSnapshot() {
         if(!scriptSnapshots.load(std::memory_order_relaxed))return;
         Snapshot fast=backend->snapshot();
+        fast.connection.mode=mode;fast.simulation=mode==ConnectionMode::Simulation;fast.eeprom=eeprom;
         fast.generation=generation;fast.completed=lastCompleted;fast.result=lastResult;fast.busy=false;
         fast.cycles=cycles;fast.missed=missed;fast.actualCycleUs=actualCycle;fast.maxJitterUs=maxJitter;
         std::lock_guard<std::mutex> lock(mutex);
@@ -214,29 +230,100 @@ struct Controller::Impl {
     void resetTiming() {
         cycles=missed=0;actualCycle=maxJitter=0;previousCycle={};nextCycle={};
     }
-    Result dispatch(const Command& command) {
-        if(command.kind==CommandKind::RefreshAdapters||command.kind==CommandKind::Scan) {
-            if(command.connection.simulation!=simulation) {
-                if(current.running)backend->stop();
-                backend->close();
-                simulation=command.connection.simulation;
-                backend=simulation?makeSimulation():makeSoem();
-                ++generation;resetTiming();markBusy();
-                current=backend->snapshot();
-            }
+    Result selectMode(ConnectionMode next) {
+        if(current.connected)return {false,"Disconnect before changing operating mode.",{}};
+        if(scriptRunning.load())return {false,"Stop the script before changing operating mode.",{}};
+        if(next!=ConnectionMode::Simulation&&next!=ConnectionMode::Hardware&&next!=ConnectionMode::Programming)
+            return {false,"Unknown operating mode.",{}};
+        if(next==mode)return {true,"Operating mode unchanged.",{}};
+        backend->close();mode=next;
+        backend=mode==ConnectionMode::Simulation?makeSimulation():makeSoem();
+        ++generation;resetTiming();markBusy();eeprom={};descriptions.clear();library={};descriptionDirty=true;
+        current=backend->snapshot();current.connection.mode=mode;
+        // Enumerating host interfaces opens no capture handle and sends no
+        // EtherCAT frames. Selecting a mode never connects or scans a bus.
+        auto adapters=backend->adapters();
+        if(!adapters.ok)log(adapters);
+        return {true,mode==ConnectionMode::Programming?"Programming mode selected; choose an interface and scan.":
+            mode==ConnectionMode::Simulation?"Simulation mode selected.":"Hardware mode selected.",{}};
+    }
+    EepromControl eepromControl() {
+        return {[this]{return cancelActive.load()||shutdown.load();},[this](const EepromProgress& progress){
+            const bool changed=eeprom.stage!=progress.stage;
+            const auto request=eeprom.request;const auto slave=eeprom.slave;
+            eeprom=progress;eeprom.request=request;eeprom.slave=slave;
+            if(changed&&!progress.detail.empty())appendLog(progress.detail,progress.stage==EepromStage::Failed);
+            publish(true);
+        }};
+    }
+    Result finishEeprom(Result result) {
+        if(!result.ok) {
+            if(eeprom.stage!=EepromStage::Failed)eeprom.stage=cancelActive.load()||shutdown.load()?EepromStage::Cancelled:EepromStage::Failed;
+        } else eeprom.stage=EepromStage::Complete;
+        eeprom.detail=result.message;
+        return result;
+    }
+    Result eepromJob(const Command& command) {
+        eeprom={EepromStage::Preparing,0,command.kind==CommandKind::WriteEeprom?command.data.size():size_t(std::max(0,command.length)),false,{}};
+        eeprom.request=activeRequest;eeprom.slave=command.slave;
+        auto fail=[this](const char* message){return finishEeprom({false,message,{}});};
+        if(mode!=ConnectionMode::Programming)return fail("Select Programming mode before EEPROM access.");
+        if(scriptRunning.load())return fail("Stop the script before EEPROM access.");
+        if(!current.connected||current.running||current.mapped)return fail("Scan in Programming mode before EEPROM access.");
+        const auto target=std::find_if(current.slaves.begin(),current.slaves.end(),[&](const Slave& slave){return slave.position==command.slave;});
+        if(target==current.slaves.end()||(target->state&15)!=1)return fail("EEPROM access requires a scanned slave with confirmed INIT.");
+        if(command.length<128||command.length>131072||(command.length&1))return fail("Confirm an even EEPROM capacity from 128 to 131072 bytes.");
+        if(target->eepromSizeKnown&&size_t(command.length)>target->eepromCapacity)return fail("The requested range exceeds the target's declared EEPROM capacity.");
+        if(cancelActive.load()||shutdown.load())return fail("EEPROM operation cancelled before access.");
+        if(command.kind==CommandKind::WriteEeprom) {
+            sii::Image image;std::string error;
+            if(!sii::fromBin(command.data,image,error))return finishEeprom({false,"Invalid EEPROM image: "+error,{}});
+            if(image.bytes!=command.data)return fail("Prepare the complete padded image before programming.");
+            if(image.bytes.size()>size_t(command.length))return fail("Image exceeds the confirmed target capacity.");
+            // Reprogramming may intentionally replace the SII identity. The
+            // backend binds the physical target to the scan, not the new IDs.
+            // Any attempted programming invalidates handles even when a later
+            // cancellation makes the exact persistent outcome uncertain.
+            ++generation;descriptionDirty=true;descriptions.clear();library={};markBusy();
+            return finishEeprom(backend->writeEeprom(command.slave,command.data,eepromControl()));
         }
-        switch(command.kind) {
-        case CommandKind::RefreshAdapters:
+        return finishEeprom(backend->readEeprom(command.slave,size_t(command.length),eepromControl()));
+    }
+    Result dispatch(const Command& command) {
+        if(command.kind==CommandKind::SetMode)return selectMode(command.connection.mode);
+        if(command.kind==CommandKind::RefreshAdapters) {
             if(current.running)return {false,"Stop cyclic exchange before refreshing adapters.",{}};
-            return backend->adapters();
+            const bool sameBackend=(command.connection.mode==ConnectionMode::Simulation)==(mode==ConnectionMode::Simulation);
+            if(!sameBackend) {
+                // Scripts can discover wired interfaces while Simulation is
+                // selected, without replacing or disconnecting its bus.
+                auto enumerator=command.connection.mode==ConnectionMode::Simulation?makeSimulation():makeSoem();
+                auto result=enumerator->adapters();result.adapters=enumerator->snapshot().adapters;return result;
+            }
+            auto result=backend->adapters();result.adapters=backend->snapshot().adapters;return result;
+        }
+        if(command.kind==CommandKind::Scan&&command.connection.mode!=mode) {
+            const auto changed=selectMode(command.connection.mode);if(!changed.ok)return changed;
+        }
+        if(mode==ConnectionMode::Programming&&command.kind!=CommandKind::RefreshAdapters&&command.kind!=CommandKind::Scan&&
+           command.kind!=CommandKind::Disconnect&&command.kind!=CommandKind::ReadEeprom&&command.kind!=CommandKind::WriteEeprom)
+            return {false,"Ordinary workbench and script operations are unavailable in Programming mode.",{}};
+        switch(command.kind) {
+        case CommandKind::SetMode:break;
+        case CommandKind::RefreshAdapters:break;
         case CommandKind::Scan:
             if(current.running)return {false,"Stop cyclic exchange before scanning devices.",{}};
+            if(mode==ConnectionMode::Programming&&scriptRunning.load())return {false,"Stop the script before a programming scan.",{}};
+            if(mode==ConnectionMode::Programming&&(command.connection.redundant||command.connection.overlap))return {false,"Programming requires a single interface without PDO mapping.",{}};
             ++generation;resetTiming();markBusy();
+            eeprom={};descriptionDirty=true;
+            if(mode==ConnectionMode::Programming)return backend->scanProgramming(command.connection,eepromControl());
             return backend->scan(command.connection);
         case CommandKind::Disconnect:
             if(current.running) {auto stop=backend->stop();if(!stop.ok)log(stop);}
             backend->close();++generation;resetTiming();markBusy();
             return {true,"Disconnected; queued commands from the previous connection are invalid.",{}};
+        case CommandKind::ReadEeprom:case CommandKind::WriteEeprom:return eepromJob(command);
         case CommandKind::State:
             if(current.running&&(command.state==AlState::Init||command.state==AlState::PreOp)) {
                 auto stopped=backend->stop();log(stopped);if(!stopped.ok)return stopped;
@@ -273,16 +360,18 @@ struct Controller::Impl {
         markBusy();
         try {
             if(queued.canceled)lastResult={false,"Queued command canceled by a stop or disconnect request.",{}};
-            else if(queued.command.generation!=generation)lastResult={false,"Stale command rejected: the connection generation changed.",{}};
+            else if(queued.command.generation!=generation&&queued.command.kind!=CommandKind::Disconnect)lastResult={false,"Stale command rejected: the connection generation changed.",{}};
             else lastResult=dispatch(queued.command);
         } catch(const std::exception& error) {
             lastResult={false,std::string("Backend error: ")+error.what(),{}};
             try{backend->close();}catch(...){}
             ++generation;resetTiming();
+            if(activeEeprom){eeprom.stage=EepromStage::Failed;eeprom.detail=lastResult.message;}
         } catch(...) {
             lastResult={false,"Unknown backend error; connection closed.",{}};
             try{backend->close();}catch(...){}
             ++generation;resetTiming();
+            if(activeEeprom){eeprom.stage=EepromStage::Failed;eeprom.detail=lastResult.message;}
         }
         lastCompleted=queued.id;log(lastResult);
         const bool wasRunning=current.running;
@@ -296,6 +385,7 @@ struct Controller::Impl {
             std::lock_guard<std::mutex> lock(mutex);
             resultHistory[queued.id]=lastResult;
             activeRequest=0;
+            activeEeprom=false;
             while(resultHistory.size()>512)resultHistory.erase(resultHistory.begin());
         }
     }
@@ -327,7 +417,7 @@ struct Controller::Impl {
     }
     void run() {
         try {
-            backend=makeSimulation();log({true,"I/O worker ready. Hardware traffic begins only after selecting an interface and scanning.",{}});publish();
+            backend=makeSoem();log(backend->adapters());log({true,"I/O worker ready. Hardware traffic begins only after selecting an interface and scanning.",{}});publish();
             while(true) {
                 Queued queued{};bool haveCommand=false,cycleDue=false;
                 {
@@ -339,7 +429,11 @@ struct Controller::Impl {
                     cycleDue=current.running&&Clock::now()>=nextCycle;
                     if(!urgent.empty()) {queued=std::move(urgent.front());urgent.pop_front();haveCommand=true;}
                     else if(!cycleDue&&!normal.empty()) {queued=std::move(normal.front());normal.pop_front();haveCommand=true;}
-                    if(haveCommand)activeRequest=queued.id;
+                    if(haveCommand) {
+                        activeRequest=queued.id;cancelActive.store(false);
+                        activeEeprom=queued.command.kind==CommandKind::ReadEeprom||queued.command.kind==CommandKind::WriteEeprom||
+                            (queued.command.kind==CommandKind::Scan&&queued.command.connection.mode==ConnectionMode::Programming);
+                    }
                 }
                 if(haveCommand)execute(std::move(queued));else if(cycleDue)exchange();
             }
@@ -357,6 +451,7 @@ Controller::~Controller()=default;
 bool Controller::cancel(uint64_t request) {
     if(!request)return false;
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    if(impl_->activeRequest==request&&impl_->activeEeprom){impl_->cancelActive.store(true);return true;}
     for(auto* queue:{&impl_->urgent,&impl_->normal}) {
         for(auto& queued:*queue) if(queued.id==request) {queued.canceled=true;return true;}
     }
@@ -369,6 +464,7 @@ uint64_t Controller::submit(Command command) {
     if(impl_->quitting||queued>=128||(!priority(command)&&queued>=120))return 0;
     if(command.generation==0)command.generation=impl_->published.generation;
     if(priority(command)) {
+        if(command.kind==CommandKind::Disconnect&&impl_->activeEeprom)impl_->cancelActive.store(true);
         // Prevent an already queued OP/Start from undoing a user's subsequent stop.
         for(auto* queue:{&impl_->urgent,&impl_->normal})for(auto& entry:*queue)
             if(command.kind==CommandKind::Disconnect||raisesState(entry.command))entry.canceled=true;
@@ -379,6 +475,7 @@ uint64_t Controller::submit(Command command) {
 }
 Snapshot Controller::snapshot() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->published;}
 void Controller::enableScriptSnapshots(bool enabled) { impl_->scriptSnapshots.store(enabled,std::memory_order_relaxed); }
+void Controller::setScriptRunning(bool running) {impl_->scriptRunning.store(running);}
 Snapshot Controller::scriptSnapshot() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->scriptSnapshots.load(std::memory_order_relaxed)?impl_->scriptPublished:impl_->published;}
 void Controller::appendLog(std::string message,bool error) { impl_->appendLog(std::move(message),error); }
 void Controller::clearLogs() {

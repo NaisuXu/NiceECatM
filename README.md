@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A graphical EtherCAT development and test workbench built with C++17, CMake, SOEM V2, SDL3 and Dear ImGui. It provides device scanning, AL-state control, PDO signal testing, ESC register access, CoE SDO access and Lua automation.
+A graphical EtherCAT development and test workbench built with C++17, CMake, SOEM V2, SDL3 and Dear ImGui. It provides device scanning, AL-state control, PDO signal testing, ESC register access, CoE SDO access, EEPROM programming and Lua automation.
 
 Windows x64 is the locally validated build target. Ubuntu x86/ARM are supported build targets that still require platform and hardware validation. Each platform and architecture needs its own executable.
 
@@ -52,6 +52,10 @@ On Linux, install a C++17 compiler, CMake 3.28+, Make and the development librar
 The default target period is 10 ms; available periods are 500 us, 1, 2, 5, 10, 20, 50 and 100 ms. These are requested periods, with measured timing statistics rather than a hard real-time guarantee. Synchronous ESC register and CoE SDO access requires cyclic exchange to be stopped.
 
 CoE / SDO displays the selected slave's object dictionary from a matching ESI and, when supported, online SDO Information in PRE-OP. Select an entry to fill its address and type; read values explicitly. Sources and partial discovery are identified, and ESI default values are never presented as current device values.
+
+The left selector offers **Simulation / Hardware / Programming**, defaulting to Hardware. Change modes while disconnected, with scripts stopped and no operation active. Programming uses one interface, a dedicated INIT scan and no PDO mapping. Only Programming enables the **EEPROM** page, where supported fixed-device ESI descriptions or validated SII BIN files can be prepared/exported offline, read from a slave, or programmed with full readback comparison. Each write confirms the target, image and capacity; different Vendor IDs or Product Codes are shown and allowed. Cancelling a write does not restore earlier contents. Follow the device's activation requirements, disconnect, select Hardware and scan again before normal I/O. See the [EEPROM guide](docs/native.md#eeprom-programming).
+
+`NiceECatM --esi-image file.xml` (or `file.bin`) opens the image in the offline Programming page without scanning or opening a capture connection.
 
 English is the default UI language. The language preference is stored in `preferences.ini` beside the executable. Scripts live in the adjacent `scripts/` directory. Build-time versions use `yyyymmddhhmm` consistently in the UI, CLI help and Windows file properties.
 

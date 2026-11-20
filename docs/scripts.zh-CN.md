@@ -27,11 +27,13 @@ bus:disconnect()
 
 `ecat.current()` 取得面向当前工作台连接的 Lua 句柄。`ecat.open(options)` 复制当前连接设置并覆盖指定选项，只创建句柄，不扫描。选项为 `interface`（或 `primary`）、`secondary`、`redundant`、`overlap`、`simulation` 和 `cycle_us`。
 
+运行脚本前先选择“模拟”或“硬件”。切换模式要求脚本停止且总线断开；编程模式不能运行脚本。完整硬件生命周期示例应先选择“硬件”，上方无硬件示例应先选择“模拟”。网卡枚举仅返回物理接口资料，不改变所选模式，也不替换或断开总线。
+
 总线操作等待主机结果后返回，失败时产生 Lua 错误，不需要 `await` 包装。
 
 | API | 行为 |
 | --- | --- |
-| `ecat.adapters()` | 枚举有线物理接口，返回 `name`、`description`；必要时选择硬件后端，不扫描从站 |
+| `ecat.adapters()` | 枚举有线物理接口，返回 `name`、`description`；不切换模式、打开总线或扫描从站 |
 | `ecat.current()` | 按当前工作台连接设置取得句柄 |
 | `ecat.open(options)` | 按显式覆盖后的连接设置取得句柄 |
 | `bus:scan()` | 配置和映射从站，结束于 PRE-OP，返回含 `position`、`name`、`state`、`dc` 的数组 |
@@ -52,7 +54,7 @@ bus:disconnect()
 
 从站位置从 1 开始；对全部从站切换状态时明确使用 `"all"`。周期单位为微秒，可选 500、1000、2000、5000、10000、20000、50000、100000。
 
-`bus:status()` 返回 `connected`、`mapped`、`running`、`busy`、`generation`、`cycles`、`wkc`、`expected_wkc`、`slaves`（数量）、`state`、`status`。信号描述包含 `name`、`input`、`type`、`bit_offset`、`bit_length`、`index`、`subindex`。
+`bus:status()` 返回 `mode`（`simulation`、`hardware` 或 `programming`）、`connected`、`mapped`、`running`、`busy`、`generation`、`cycles`、`wkc`、`expected_wkc`、`slaves`（数量）、`state`、`status`。信号描述包含 `name`、`input`、`type`、`bit_offset`、`bit_length`、`index`、`subindex`。
 
 信号名称与对象地址因设备而异，不应假定 Input 之类名称唯一；可以先查看描述：
 

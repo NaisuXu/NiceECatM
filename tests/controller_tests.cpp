@@ -75,13 +75,13 @@ int main() {
     try {
         Controller controller;
         check(waitFor([&]{return !controller.snapshot().adapters.empty();}),"Worker initializes without blocking GUI");
-        auto initial=controller.snapshot();check(initial.simulation&&!initial.connected,"Default is unconnected simulation");
+        auto initial=controller.snapshot();check(!initial.simulation&&!initial.connected&&initial.connection.mode==ConnectionMode::Hardware,"Default is unconnected Hardware");
         auto send=[&](Command command) {
             auto id=controller.submit(std::move(command));check(id!=0,"Command admitted");
             check(waitFor([&]{return controller.snapshot().completed==id&&!controller.snapshot().busy;}),"Command completes");
             return controller.snapshot();
         };
-        Command scan;scan.kind=CommandKind::Scan;scan.connection.primary="sim-primary";
+        Command scan;scan.kind=CommandKind::Scan;scan.connection.mode=ConnectionMode::Simulation;scan.connection.primary="sim-primary";
         auto view=send(scan);check(view.result.ok&&view.connected&&view.generation>initial.generation,"Scan creates a fresh generation");
         Command cycle;cycle.kind=CommandKind::SetCycle;cycle.connection.cycleUs=20000;
         view=send(cycle);check(view.result.ok&&view.connection.cycleUs==20000,"Connected PRE-OP accepts target cycle update");
@@ -104,10 +104,11 @@ int main() {
         state.state=AlState::PreOp;view=send(state);check(view.result.ok&&!view.running&&view.slaves[4].state==2,"Lower-state request stops cycles first");
         check(view.slaves[4].outputs[0]==0xaa,"State control preserves output image");
 
-        Command hardware;hardware.kind=CommandKind::RefreshAdapters;hardware.connection.simulation=false;
+        Command disconnectBeforeMode;disconnectBeforeMode.kind=CommandKind::Disconnect;view=send(disconnectBeforeMode);
+        Command hardware;hardware.kind=CommandKind::SetMode;hardware.connection.mode=ConnectionMode::Hardware;
         const auto beforeMode=view.generation;view=send(hardware);
         check(!view.connected&&view.slaves.empty()&&view.generation>beforeMode,"Mode changes clear prior devices and advance generation");
-        scan.connection.simulation=false;view=send(scan);check(view.result.ok&&view.connected,"Test backend scan");
+        scan.connection.mode=ConnectionMode::Hardware;view=send(scan);check(view.result.ok&&view.connected,"Test backend scan");
         cycle.connection.cycleUs=100000;view=send(cycle);
         observedCycles=0;state.state=AlState::Op;view=send(state);
         check(waitFor([]{return observedCycles.load()>0;}),"Long-period exchange starts");

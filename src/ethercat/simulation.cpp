@@ -27,13 +27,13 @@ class Simulation final : public Backend {
     bool serviceAllowed() const {return view_.connected&&!view_.running;}
     bool mailboxAllowed(const Slave& s) const {return (s.state&15)==2||(s.state&15)==4||(s.state&15)==8;}
 public:
-    Simulation() {view_.simulation=true;view_.driver="Built-in simulator / no hardware access";adapters();}
+    Simulation() {view_.simulation=true;view_.connection.mode=ConnectionMode::Simulation;view_.driver="Built-in simulator / no hardware access";adapters();}
     Result adapters() override {
         view_.adapters={{"sim-primary","Simulated adapter A"},{"sim-secondary","Simulated adapter B"}};
         return success("Two simulated adapters available.");
     }
     Result scan(const Connection& connection) override {
-        close();view_.connection=connection;view_.connection.simulation=true;
+        close();view_.connection=connection;view_.connection.mode=ConnectionMode::Simulation;
         if(connection.redundant&&(connection.primary.empty()||connection.secondary.empty()||connection.primary==connection.secondary))return failure("Redundancy requires two different adapters.");
         if(!validCycle(connection.cycleUs))return failure("Unsupported target cycle.");
         const std::array<const char*,5> names={"EK1100","EL1008","EL2008","EL3062","DEMO-PDO"};

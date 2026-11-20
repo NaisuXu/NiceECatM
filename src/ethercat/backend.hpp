@@ -11,6 +11,9 @@ public:
     virtual ~Backend()=default;
     virtual Result adapters()=0;
     virtual Result scan(const Connection&)=0;
+    virtual Result scanProgramming(const Connection&,const EepromControl&) {return {false,"Programming scan is unavailable in this backend.",{}};}
+    virtual Result readEeprom(int,size_t,const EepromControl&) {return {false,"EEPROM read is unavailable in this backend.",{}};}
+    virtual Result writeEeprom(int,const std::vector<uint8_t>&,const EepromControl&) {return {false,"EEPROM programming is unavailable in this backend.",{}};}
     virtual Result state(int slave, AlState)=0;
     virtual Result setCycle(int cycleUs)=0;
     virtual Result start()=0;

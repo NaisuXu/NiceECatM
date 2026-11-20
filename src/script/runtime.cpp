@@ -313,10 +313,9 @@ int openFunction(lua_State* state) {
     {
         std::lock_guard<std::mutex> lock(self->mutex);
         result->connection=self->liveSnapshot.connection;
-        result->connection.simulation=self->liveSnapshot.simulation;
     }
     if(lua_istable(state,1)) {
-        lua_getfield(state,1,"simulation");if(lua_isboolean(state,-1))result->connection.simulation=lua_toboolean(state,-1);lua_pop(state,1);
+        lua_getfield(state,1,"simulation");if(lua_isboolean(state,-1))result->connection.mode=lua_toboolean(state,-1)?ConnectionMode::Simulation:ConnectionMode::Hardware;lua_pop(state,1);
         lua_getfield(state,1,"redundant");if(lua_isboolean(state,-1))result->connection.redundant=lua_toboolean(state,-1);lua_pop(state,1);
         lua_getfield(state,1,"overlap");if(lua_isboolean(state,-1))result->connection.overlap=lua_toboolean(state,-1);lua_pop(state,1);
         lua_getfield(state,1,"primary");if(lua_isstring(state,-1))result->connection.primary=luaText(state,-1);lua_pop(state,1);
@@ -330,7 +329,8 @@ int currentFunction(lua_State* state) { return openFunction(state); }
 int statusFunction(lua_State* state) {
     auto* b=bus(state);Snapshot snapshot;
     { std::lock_guard<std::mutex> lock(b->runtime->mutex);snapshot=b->runtime->liveSnapshot; }
-    lua_createtable(state,0,11);
+    lua_createtable(state,0,12);
+    lua_pushstring(state,snapshot.connection.mode==ConnectionMode::Programming?"programming":snapshot.connection.mode==ConnectionMode::Simulation?"simulation":"hardware");lua_setfield(state,-2,"mode");
     lua_pushboolean(state,snapshot.connected);lua_setfield(state,-2,"connected");
     lua_pushboolean(state,snapshot.mapped);lua_setfield(state,-2,"mapped");
     lua_pushboolean(state,snapshot.running);lua_setfield(state,-2,"running");
@@ -385,15 +385,14 @@ void pushDevices(lua_State* state,const Snapshot& snapshot) {
 }
 int adaptersFunction(lua_State* state) {
     auto* self=impl(state);
-    // Adapter discovery is a hardware operation.  Runtime instances start
-    // with the simulation backend so scripts can attach to the workbench,
-    // but ecat.adapters() must explicitly switch to SOEM before enumerating
-    // physical wired interfaces.  Otherwise the first lifecycle example
-    // would only ever see the simulator adapter.
-    ScriptRequest req;req.kind=RequestKind::RefreshAdapters;req.connection.simulation=false;
+    // Host enumeration returns its own metadata. It must not switch the
+    // selected operating mode or disconnect an existing workbench bus.
+    ScriptRequest req;req.kind=RequestKind::RefreshAdapters;req.connection.mode=ConnectionMode::Hardware;
     const auto result=self->perform(req);
     if(!result.ok)return luaL_error(state,"%s",result.message.empty()?"Adapter enumeration failed":result.message.c_str());
-    Snapshot snapshot;{std::lock_guard<std::mutex> lock(self->mutex);snapshot=self->liveSnapshot;}pushAdapters(state,snapshot);return 1;
+    Snapshot snapshot;{std::lock_guard<std::mutex> lock(self->mutex);snapshot=self->liveSnapshot;}
+    if(result.adapters)snapshot.adapters=*result.adapters;
+    pushAdapters(state,snapshot);return 1;
 }
 int scanFunction(lua_State* state) {
     auto* b=bus(state);ScriptRequest request;request.kind=RequestKind::Scan;request.connection=b->connection;const auto result=b->runtime->perform(request);
@@ -519,6 +518,9 @@ bool Runtime::start() {
     {
         std::lock_guard<std::mutex> lock(self.mutex);
         if(!self.loaded)return false;
+        if(self.liveSnapshot.connection.mode==ConnectionMode::Programming) {
+            self.error="Scripts are unavailable in Programming mode.";self.state=Status::Error;return false;
+        }
         if(self.thread.joinable()&&(self.state==Status::Running||self.state==Status::Waiting))return false;
     }
     if(self.thread.joinable())self.thread.join();

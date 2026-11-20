@@ -30,10 +30,20 @@ ESI 条目需要匹配方向、PDO/对象标识、子索引、位宽及兼容的
 
 支持 BOOL、1–64 位有符号/无符号整数、REAL32、REAL64；可规范化 INT、UDINT、LREAL 等 IEC 别名，以及 BITARR8/16/32。填充位只读，未知或不支持的字符串、数组和结构区域保留为原始字节/位。数值按 EtherCAT 小端位序解释。
 
+## EEPROM 镜像
+
+ESI XML 是描述文件，不是 EEPROM 镜像。**EEPROM** 页面仅在“**编程**”模式下可用，独立地从选中的 ESI Device 生成二进制 Slave Information Interface（SII）镜像，也可导入现有 SII BIN。加载、预览和导出镜像不需要连接设备；读取或烧录实际 EEPROM 需要完成编程扫描并确认 INIT。EEPROM 通过 ESC 的 EEPROM 接口访问，不经过 CoE/SDO 或 FoE。
+
+烧录可以有意更改 Vendor ID 或 Product Code；差异在现有写入确认中显示，不阻止烧录，也不需要额外解锁。目标设备与自身的扫描快照核对，镜像验证和声明容量检查仍然有效。标识一致本身不能证明硬件或固件兼容。这是编程规则，与正常工作台的 ESI 身份匹配不同：[Microchip AN1910 §4.2](https://ww1.microchip.com/downloads/en/AppNotes/AN1910-Application-Note-DS00001920B.pdf) 描述了修改 EEPROM 身份再烧录，[Beckhoff ET9300 §14.2](https://download.beckhoff.com/download/Document/io/ethercat-development-products/an_et9300_v1i10.pdf) 描述了从 ESI 烧录选中的从站。
+
+原生生成器覆盖附带 AX58100／LAN9252 文件使用的固定布局特性：ESC ConfigData、身份、Bootstrap／普通邮箱配置，以及 Strings、General、FMMU、SyncManager、固定 PDO 和已支持的 DC 时序字段。BITARR 保留正确的 EtherCAT 类型编号。生成时检查范围、分类区和字符串引用、配置区 CRC，镜像未使用部分用 `0xFF` 填充。镜像字符串优先选英文，其次无语言标记或第一个可用名称；切换界面语言不改变字节内容。
+
+模块化布局、自定义 PDO 数据类型、Eeprom/Data 或自定义 ESI 分类区、不支持的 DC 时序选项，以及未知的镜像相关字段都会明确拒绝。能显示某份 ESI，不代表可以从它生成 EEPROM。超出该范围时，可导入厂商提供或 SSC／TwinCAT 导出的 BIN。BIN 导入保留范围有效的未知分类区；在合法 SII 结束标记后截止的短镜像，会明确补齐至声明容量。结构有效或回读成功，本身不代表与特定设备固件兼容，也不代表新配置已经生效。
+
 ## 语言与范围
 
 文件有本地化名称时按界面语言选择，只有英文时在中文界面仍使用英文，不要求用户补充别名，也不自动翻译。设备原始字符串和标识保持不变。
 
-ESI 用于显示元数据，不执行 ESI 初始化、启动命令、PDO 重映射或模块插槽配置。寄存器或对象写入使映射失效后，需要重新扫描，才能恢复类型化 PDO 访问和周期交换。
+工作台的 ESI 目录用于显示元数据，不执行 ESI 初始化、启动命令、PDO 重映射或模块插槽配置；EEPROM 镜像准备是单独的明确操作。寄存器或对象写入使映射失效后，需要重新扫描，才能恢复类型化 PDO 访问和周期交换。
 
 PDO 发现在扫描阶段执行；在线对象字典在 PRE-OP 且周期交换停止时单独读取，流程有界，两者都不进入周期循环。CLI 扫描 JSON 包含 ESI 目录和数量、逐站匹配结果及 `pdoEntries`。XML 解析已嵌入，无需额外 XML 运行时。

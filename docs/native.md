@@ -30,7 +30,7 @@ SOEM, SDL, Dear ImGui, Lua, TinyXML2 and the code editor are provided at fixed v
 
 `windows-mingw-release` is a CMake preset describing the platform, compiler and build type. Keeping `build/windows-mingw-release/` separate from `build/linux-release/` prevents caches and object files from different toolchains from being mixed.
 
-Everything under `build/` is generated and can be regenerated. `build/<preset>/_deps/` contains compiled dependency outputs. Removing `build/` keeps the dependency sources in `third_party/`, so rebuilding does not require network access. `dist/` contains installed applications; it may also contain user-created files beside the executable. Preserve those files before replacing an installation.
+CMake build directories are generated; `build/<preset>/_deps/` contains compiled dependency outputs. Removing them keeps the dependency sources in `third_party/`, so rebuilding does not require network access. `dist/` contains installed applications and may also contain user-created files beside the executable. Preserve any manually stored backups before clearing `build/`, and user files before replacing an installation.
 
 Equivalent manual commands are:
 
@@ -78,7 +78,7 @@ Software versions use local build time in `yyyymmddhhmm`. The UI, CLI help and W
 
 Windows hardware access requires an installed Npcap or compatible WinPcap driver. Driver installers and capture DLLs are not bundled. Without the driver, the GUI and built-in simulation remain available, and hardware enumeration reports the failure.
 
-Select a physical wired adapter and scan. Single-port operation uses one interface. Same-bus dual-port redundancy uses two different interfaces connected to opposite ends of the slave chain. Normal and overlapped mapping are independent of port count. Disconnect before changing Hardware/Simulation, connection mode, interfaces or mapping, then scan again.
+Select a physical wired adapter and scan. Single-port operation uses one interface. Same-bus dual-port redundancy uses two different interfaces connected to opposite ends of the slave chain. Normal and overlapped mapping are independent of port count. Disconnect before changing Simulation/Hardware/Programming, connection mode, interfaces or mapping, then scan again. Stop scripts before changing the operating mode.
 
 Scanning is an active SOEM configuration and mapping operation. It leaves responding slaves in PRE-OP; it is not a passive packet capture. Select a discovered slave in the topology to inspect its signals, identity, registers or SDO objects.
 
@@ -109,9 +109,16 @@ Background AL-state monitoring distinguishes an unreadable `NONE` result from a 
 - **Device / DC:** device identity, mapped layout information and declared capabilities. DC trigger configuration/readback is not connected.
 - **Diagnostics:** WKC, host timing, bus context and a 200-sample deviation history.
 - **Scripts:** Lua editor, saved files, API snippets and automation. See the [script guide](scripts.md).
+- **EEPROM:** Programming-only image preparation/export, EEPROM read/save and selected-target programming with complete readback comparison.
 - **Log:** shared application and script messages with Follow and Clear controls. Select one entry and press Ctrl+C to copy its complete displayed line.
 
 Writes do not require a global unlock. State, direction, size, mapping and object permissions are always enforced. In PRE-OP/SAFE-OP an output-image write prepares the master image; it does not establish physical output activation. Synchronous register and SDO operations require cyclic exchange to be stopped.
+
+## EEPROM programming
+
+Stop scripts, disconnect and select **Programming** to enable EEPROM. Open a supported ESI device description or SII BIN; preparing/exporting an image works without a connection. Select one adapter and scan to INIT without PDO mapping, then choose the physical target in the left topology. **Read & save** reads its EEPROM. **Program EEPROM** confirms the target, image and capacity, writes the prepared image including Alias/Serial and padding, then compares the full readback. Vendor ID/Product Code changes are shown and allowed; matching identifiers do not prove hardware compatibility. Capacity from SII is a declaration, not a physical measurement. See [image support and validation](esi.md#eeprom-images).
+
+Cancelling after writing starts may leave a partial image; there is no rollback. The mode remains Programming. Follow the device's reload or power-cycle requirements, disconnect, select Hardware and scan again for normal I/O; OP is not resumed automatically.
 
 ## CLI
 
@@ -122,8 +129,11 @@ Writes do not require a global unlock. State, direction, size, mapping and objec
 ./dist/windows-x64/NiceECatM.exe --scan --interface "<adapter name>"
 ./dist/windows-x64/NiceECatM.exe --read-register 0x130 --length 6 --slave 1 --interface "<adapter name>"
 ./dist/windows-x64/NiceECatM.exe --sdo-read 0x1008 --sub 0 --length 128 --slave 1 --interface "<adapter name>"
+./dist/windows-x64/NiceECatM.exe --programming-scan --interface "<adapter name>"
+./dist/windows-x64/NiceECatM.exe --eeprom-read backup.bin --slave 1 --interface "<adapter name>"
+./dist/windows-x64/NiceECatM.exe --sii-export device.xml --esi-device 0 --output device.bin
 ```
 
-CLI operations return JSON. Hardware operations require an explicitly selected adapter. The CLI scans/configures before its requested operation, then closes the backend; it is not a persistent cyclic runner. Options include `--secondary NAME`, `--overlap` and `--cycle-us`. GUI language can be selected at startup with `--language en` or `--language zh-CN`.
+CLI operations return JSON. Hardware operations require an explicitly selected adapter. Ordinary operations scan/configure before the requested operation and close the backend afterwards; the CLI is not a persistent cyclic runner. `--programming-scan` and `--eeprom-read` use the dedicated INIT inventory path without PDO mapping. `--sii-export` is offline. Options include `--secondary NAME`, `--overlap` and `--cycle-us`. GUI language can be selected with `--language en` or `--language zh-CN`; `--esi-image file.xml` (or `file.bin`) opens the offline Programming page without scanning or opening a capture connection.
 
 See [validation](native-validation.md) for reproducible checks and [architecture](design.md) for implemented boundaries.

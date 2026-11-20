@@ -4,9 +4,11 @@
 -- NiceECatM example: complete host lifecycle.
 -- Lists adapters, opens the first wired interface, scans the bus, reads
 -- identity and PDO information, changes state, then closes the bus.
--- ecat.adapters() enumerates physical wired adapters, even when the GUI
--- currently shows the built-in simulation. This finite script stops after
--- the disconnect completes.
+-- Select Hardware and disconnect any existing bus before running this example.
+-- Adapter enumeration itself never switches the selected operating mode.
+-- This finite script stops after the disconnect completes.
+
+assert(ecat.current():status().mode == "hardware", "Select Hardware before running this example")
 
 local adapters = ecat.adapters()
 assert(#adapters > 0, "no wired Ethernet adapters found")
@@ -14,7 +16,7 @@ for index, adapter in ipairs(adapters) do
     log.info(string.format("adapter %d: %s (%s)", index, adapter.name, adapter.description))
 end
 
-local bus = ecat.open({ interface = adapters[1].name, cycle_us = 10000 })
+local bus = ecat.open({ interface = adapters[1].name, simulation = false, cycle_us = 10000 })
 local status = bus:status()
 log.info(string.format("opened: connected=%s cycle=%dus", tostring(status.connected), 10000))
 

@@ -48,6 +48,21 @@ bool hasErrors(const View& view) {
 int main() {
     int checks=0;
     {
+        Runtime runtime;Snapshot snapshot;snapshot.connection.mode=niceecatm::ConnectionMode::Programming;runtime.updateSnapshot(snapshot);
+        if(!runtime.load("programming.lua","return 1")||runtime.start()||runtime.snapshot().error.empty())return 140;
+        ++checks;
+    }
+    {
+        HostCallbacks callbacks;callbacks.execute=[](const ScriptRequest& request,HostResult& result){
+            if(request.kind!=RequestKind::RefreshAdapters)return false;
+            result.ok=true;result.adapters=std::vector<niceecatm::Adapter>{{"wired0","Physical metadata"}};return true;
+        };
+        Runtime runtime(callbacks);Snapshot snapshot;snapshot.simulation=true;snapshot.connection.mode=niceecatm::ConnectionMode::Simulation;
+        snapshot.adapters={{"sim0","Existing simulator"}};runtime.updateSnapshot(snapshot);
+        if(!runtime.load("enumeration.lua","local a=ecat.adapters(); assert(#a==1 and a[1].name=='wired0'); assert(ecat.current():status().mode=='simulation')")||!runtime.start()||!waitFor(runtime,Status::Stopped))return 141;
+        ++checks;
+    }
+    {
         RuntimeOptions options;options.maxInstructions=3000;options.maxMemoryBytes=2u*1024u*1024u;
         Runtime runtime({},options);
         if(!runtime.load("loop.lua","while true do end")||!runtime.start()||!waitFor(runtime,Status::Error))return 1;

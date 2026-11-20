@@ -40,6 +40,7 @@ struct HostResult {
     bool ok=false;
     std::string message;
     std::vector<uint8_t> data;
+    std::optional<std::vector<Adapter>> adapters{};
 };
 
 struct HostCallbacks {

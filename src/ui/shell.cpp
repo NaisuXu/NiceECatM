@@ -26,9 +26,23 @@ void smallLabel(float y,const char* en,const char* zh) { textAt(12,y,tr(en,zh),s
 void tooltip(const char* en,const char* zh) {
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",tr(en,zh));
 }
-void sourceChanged(Controller& c,const Snapshot& s,bool simulation) {
-    ui.config.simulation=simulation;ui.config.primary.clear();ui.config.secondary.clear();
-    command(c,s,CommandKind::RefreshAdapters);
+void sourceChanged(Controller& c,const Snapshot& s,ConnectionMode mode) {
+    if(s.connected||blocked(s)||scriptRunning()||mode==ui.config.mode)return;
+    const auto previous=ui.config;
+    if((mode==ConnectionMode::Simulation)!=(ui.config.mode==ConnectionMode::Simulation))ui.config.primary.clear();
+    ui.config.mode=mode;ui.config.secondary.clear();
+    // EEPROM is a programming-only workbench. Leave that page immediately
+    // when the user switches back to Simulation or Hardware, including while
+    // the asynchronous mode request is still being completed.
+    if(mode!=ConnectionMode::Programming) {
+        if(ui.activeTab=="eeprom")ui.activeTab="pdo";
+        if(ui.requestedTab=="eeprom")ui.requestedTab.clear();
+    }
+    if(mode==ConnectionMode::Programming){ui.config.redundant=false;ui.config.overlap=false;}
+    Command request;request.kind=CommandKind::SetMode;request.connection=ui.config;request.generation=s.generation;
+    const uint64_t id=c.submit(std::move(request));
+    if(!id){ui.config=previous;ui.localError="Command queue is full.";return;}
+    ui.previousModeConfig=previous;ui.pendingMode=mode;ui.modeRequest=id;ui.requests.insert(id);ui.awaiting=true;ui.localError.clear();
 }
 bool tintButton(const char* text,ImVec2 size,bool active,ImVec4 activeColor=teal) {
     ImGui::PushStyleColor(ImGuiCol_Button,active?ImVec4{activeColor.x,activeColor.y,activeColor.z,.12f}:ImGui::GetStyleColorVec4(ImGuiCol_Button));
@@ -66,6 +80,7 @@ uint16_t scopeState(const Snapshot& s) {
     return state;
 }
 std::string deviceDescription(const Slave& slave,const Snapshot& s) {
+    if(s.connection.mode==ConnectionMode::Programming)return slave.eepromIdentityKnown?tr("EEPROM programming target","EEPROM 编程目标"):tr("Blank / invalid SII","空白 / 无效 SII");
     if(s.simulation) {
         if(slave.name.find("EK1100")!=std::string::npos)return tr("EtherCAT bus coupler","EtherCAT 总线耦合器");
         if(slave.name.find("EL1008")!=std::string::npos)return tr("8-channel digital input","8 通道数字输入");
@@ -165,31 +180,41 @@ void sidebar(Controller& c,const Snapshot& s) {
     ImGui::SetCursorPos({12,12});icon(Icon::Network,15,IM_COL32(129,201,208,255));
     textAt(36,11,tr("EtherCAT master","EtherCAT 主站"),{.86f,.92f,.96f,1},fonts.regular,13);
     textAt(12,34,tr("One master · raw Ethernet access","单主机 · 原始以太网通信"),sideMuted,fonts.small,10);
-    ImGui::BeginDisabled(blocked(s)||s.connected);ImGui::SetCursorPos({12,54});
-    if(tintButton(label("Simulation","模拟设备","simulation").c_str(),{91,24},ui.config.simulation,{.40f,.80f,.82f,1}))sourceChanged(c,s,true);
-    ImGui::SameLine(109);
-    if(tintButton(label("Hardware","真实设备","hardware").c_str(),{91,24},!ui.config.simulation,{.40f,.80f,.82f,1}))sourceChanged(c,s,false);
+    const bool programming=ui.config.mode==ConnectionMode::Programming,simulation=ui.config.mode==ConnectionMode::Simulation;
+    ImGui::PushFont(font(fonts.small),10);ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{3,5});
+    ImGui::BeginDisabled(blocked(s)||s.connected||scriptRunning());ImGui::SetCursorPos({12,54});
+    if(tintButton(label("Simulation","模拟","simulation").c_str(),{58,24},simulation,{.40f,.80f,.82f,1}))sourceChanged(c,s,ConnectionMode::Simulation);
+    if(s.connected)tooltip("Disconnect before changing mode.","请先断开连接再切换模式。");else if(scriptRunning())tooltip("Stop the script before changing mode.","请先停止脚本再切换模式。");
+    ImGui::SameLine(75);
+    if(tintButton(label("Hardware","硬件","hardware").c_str(),{54,24},ui.config.mode==ConnectionMode::Hardware,{.40f,.80f,.82f,1}))sourceChanged(c,s,ConnectionMode::Hardware);
+    if(s.connected)tooltip("Disconnect before changing mode.","请先断开连接再切换模式。");else if(scriptRunning())tooltip("Stop the script before changing mode.","请先停止脚本再切换模式。");
+    ImGui::SameLine(134);
+    if(tintButton(label("Programming","编程","programming").c_str(),{70,24},programming,{.40f,.80f,.82f,1}))sourceChanged(c,s,ConnectionMode::Programming);
+    if(s.connected)tooltip("Disconnect before changing mode.","请先断开连接再切换模式。");else if(scriptRunning())tooltip("Stop the script before changing mode.","请先停止脚本再切换模式。");
+    ImGui::EndDisabled();ImGui::PopStyleVar();ImGui::PopFont();ImGui::BeginDisabled(blocked(s)||s.connected);
     smallLabel(87,"Connection mode","连接模式");ImGui::SetCursorPos({12,102});ImGui::SetNextItemWidth(-1);
     const char* modes[]={tr("Single port","单网口"),tr("Dual-port redundancy","同总线双口冗余")};int mode=ui.config.redundant?1:0;
+    ImGui::BeginDisabled(programming);
     if(ImGui::Combo("##connection-mode",&mode,modes,2))ui.config.redundant=mode==1;
+    ImGui::EndDisabled();
     smallLabel(135,"Primary interface · A","主网口 · A");
-    rightText(ImGui::GetWindowWidth()-13,135,ui.config.simulation?"SIM":s.connected?"OPEN":"CLOSED",ui.config.simulation?sideMuted:ImVec4{.42f,.75f,.62f,1},fonts.mono,9);
+    rightText(ImGui::GetWindowWidth()-13,135,simulation?"SIM":s.connected?"OPEN":"CLOSED",simulation?sideMuted:ImVec4{.42f,.75f,.62f,1},fonts.mono,9);
     ImGui::SetCursorPos({12,150});adapterCombo(s,"##primary",ui.config.primary);float offset=0;
     if(ui.config.redundant) {
         smallLabel(183,"Redundant interface · B","冗余网口 · B");
-        rightText(ImGui::GetWindowWidth()-13,183,ui.config.simulation?"SIM":s.connected?"OPEN":"CLOSED",sideMuted,fonts.mono,9);
+        rightText(ImGui::GetWindowWidth()-13,183,simulation?"SIM":s.connected?"OPEN":"CLOSED",sideMuted,fonts.mono,9);
         ImGui::SetCursorPos({12,198});adapterCombo(s,"##secondary",ui.config.secondary);offset=48;
     }
     smallLabel(183+offset,"Process-data mapping","过程数据映射");ImGui::SetCursorPos({12,198+offset});ImGui::SetNextItemWidth(-1);
-    const char* mapping[]={tr("Normal mapping","普通映射"),tr("Overlapped mapping","重叠映射")};int overlap=ui.config.overlap?1:0;
-    if(ImGui::Combo("##mapping-mode",&overlap,mapping,2))ui.config.overlap=overlap==1;
+    const char* mapping[]={programming?tr("Not used for programming","编程模式不使用映射"):tr("Normal mapping","普通映射"),tr("Overlapped mapping","重叠映射")};int overlap=ui.config.overlap?1:0;
+    ImGui::BeginDisabled(programming);if(ImGui::Combo("##mapping-mode",&overlap,mapping,2))ui.config.overlap=overlap==1;ImGui::EndDisabled();
     ImGui::EndDisabled();
     const bool duplicate=ui.config.redundant&&!ui.config.primary.empty()&&ui.config.primary==ui.config.secondary;
-    textAt(12,235+offset,duplicate?tr("Choose two different interfaces","选择两个不同的网卡"):ui.config.redundant?tr("A -> same slave chain -> B","A -> 同一从站链 -> B"):tr("Single interface - no redundant path","单网口 - 无冗余路径"),duplicate?ImVec4{.94f,.55f,.55f,1}:sideMuted,fonts.small,9);
+    textAt(12,235+offset,programming?tr("Single port · INIT · no PDO mapping","单网口 · INIT · 不进行 PDO 映射"):duplicate?tr("Choose two different interfaces","选择两个不同的网卡"):ui.config.redundant?tr("A -> same slave chain -> B","A -> 同一从站链 -> B"):tr("Single interface - no redundant path","单网口 - 无冗余路径"),duplicate?ImVec4{.94f,.55f,.55f,1}:sideMuted,fonts.small,9);
     ImGui::SetCursorPos({12,255+offset});
     ImGui::PushStyleColor(ImGuiCol_Text,{.57f,.84f,.86f,1});ImGui::PushStyleColor(ImGuiCol_Button,{.125f,.24f,.31f,1});
-    ImGui::BeginDisabled(blocked(s)||s.running);
-    if(ImGui::Button(label("Scan devices","扫描设备","scan").c_str(),{-1,28}))command(c,s,CommandKind::Scan);
+    ImGui::BeginDisabled(blocked(s)||s.running||(programming&&scriptRunning()));
+    if(ImGui::Button(label(programming?"Scan for programming":"Scan devices",programming?"扫描可编程从站":"扫描设备","scan").c_str(),{-1,28}))command(c,s,CommandKind::Scan);
     ImGui::EndDisabled();ImGui::PopStyleColor(2);ImGui::SetCursorPos({12,290+offset});
     ImGui::BeginDisabled(blocked(s)||s.connected);
     if(iconButton("refresh-adapters",Icon::Scan,tr("Refresh interfaces","刷新网卡"),{25,20}))command(c,s,CommandKind::RefreshAdapters);
@@ -209,7 +234,9 @@ void sidebar(Controller& c,const Snapshot& s) {
     float previousY=allPos.y+35;
     for(const auto& slave:s.slaves) {
         ImGui::PushID(slave.position);const ImVec2 row=ImGui::GetCursorScreenPos();ImGui::SetCursorScreenPos({row.x+26,row.y});
+        ImGui::BeginDisabled(programming&&blocked(s));
         if(ImGui::Selectable("##device",ui.selected==slave.position,ImGuiSelectableFlags_None,{std::max(1.f,ImGui::GetContentRegionAvail().x),51}))ui.selected=slave.position;
+        ImGui::EndDisabled();
         if(ImGui::IsItemHovered())ImGui::SetTooltip("%d · %s\n%s\n%s: %s (%s)\n%s: %s",slave.position,slave.name.c_str(),deviceDescription(slave,s).c_str(),tr("Actual AL","实际 AL"),stateLabel(slave.state).c_str(),hexNumber(slave.state,4).c_str(),tr("AL status code","AL 状态码"),hexNumber(slave.alCode,4).c_str());
         draw->AddLine({row.x+13,previousY},{row.x+13,row.y+25},ImGui::ColorConvertFloat4ToU32(sideLine));
         draw->AddLine({row.x+13,row.y+25},{row.x+25,row.y+25},ImGui::ColorConvertFloat4ToU32(sideLine));previousY=row.y+25;
@@ -250,16 +277,17 @@ void stateToolbar(Controller& c,const Snapshot& s) {
     const float rowY=15.f;
     ImGui::PushFont(font(fonts.small),11);ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{5,9});
     const bool cycleEditable=!s.connected||(!s.running&&std::all_of(s.slaves.begin(),s.slaves.end(),[](const Slave& slave){const auto state=slave.state&0xf;return state==1||state==2;}));
-    ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(80);ImGui::BeginDisabled(blocked(s)||!cycleEditable);
+    const bool programming=ui.config.mode==ConnectionMode::Programming;
+    ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(80);ImGui::BeginDisabled(programming||blocked(s)||!cycleEditable);
     const int cycles[]={500,1000,2000,5000,10000,20000,50000,100000};const char* names[]={"500 μs","1 ms","2 ms","5 ms","10 ms","20 ms","50 ms","100 ms"};
     int cycle=4;for(int i=0;i<8;++i)if(ui.config.cycleUs==cycles[i])cycle=i;
     if(ImGui::Combo("##cycle",&cycle,names,8)){ui.config.cycleUs=cycles[cycle];if(s.connected){Command cmd;cmd.kind=CommandKind::SetCycle;cmd.connection.cycleUs=ui.config.cycleUs;send(c,s,std::move(cmd));}}
     ImGui::EndDisabled();tooltip("Target cycle. Change while disconnected or all slaves are INIT/PRE-OP.","断开连接或所有从站处于 INIT/PRE-OP 时可修改。");
     x+=88;ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(86);
     const char* scopes[]={tr("All slaves","全部从站"),tr("Selected","当前从站")};int scope=ui.allStates?0:1;
-    if(ImGui::Combo("##state-scope",&scope,scopes,2))ui.allStates=scope==0;
+    ImGui::BeginDisabled(programming);if(ImGui::Combo("##state-scope",&scope,scopes,2))ui.allStates=scope==0;ImGui::EndDisabled();
     tooltip("AL-state request target. Cyclic I/O always exchanges the whole bus.","AL 状态请求目标。周期 I/O 始终交换整条总线。");x+=94;
-    ImGui::BeginDisabled(!s.connected||blocked(s));
+    ImGui::BeginDisabled(programming||!s.connected||blocked(s));
     const AlState states[]={AlState::Init,AlState::PreOp,AlState::SafeOp,AlState::Op};
     const float stateWidths[]={48,66,72,44};
     for(int i=0;i<4;++i) {

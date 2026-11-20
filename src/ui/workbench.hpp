@@ -11,7 +11,9 @@ void drawWorkbench(Controller& controller);
 // Optional startup presentation override. It does not save a language preference
 // or issue any master command.
 void configureWorkbench(const char* language,const char* tab,int slave=0);
-void configureWorkbenchSource(bool simulation);
+void configureWorkbenchMode(ConnectionMode mode);
+// Optional offline image source, processed on the GUI thread without a bus.
+void configureWorkbenchEepromImage(const char* path);
 void configureWorkbenchUpdates(updates::Checker* checker);
 void configureWorkbenchFonts(ImFont* regular,ImFont* small,ImFont* title,ImFont* value,ImFont* mono);
 // Stops the optional script worker before the Controller owner is destroyed.

@@ -17,7 +17,7 @@
 const char* niceecatmFontData();
 const char* niceecatmMonoFontData();
 int runDesktop(int argc,char**argv) {
-    int frames=0,device=0,width=1366,height=768;bool smoke=false,smokeCyclic=false;std::string screenshot,language,tab,smokeUpdate;
+    int frames=0,device=0,width=1366,height=768;bool smoke=false,smokeCyclic=false;std::string screenshot,language,tab,smokeUpdate,esiImage;
     for(int i=1;i<argc;++i){std::string a=argv[i];if(a=="--ui-smoke")smoke=true;
       else if(a=="--ui-smoke-cyclic"){smoke=true;smokeCyclic=true;}
       else if(a=="--ui-smoke-update"&&i+1<argc){
@@ -28,11 +28,16 @@ int runDesktop(int argc,char**argv) {
       else if(a=="--screenshot"&&i+1<argc)screenshot=argv[++i];
       else if(a=="--language"&&i+1<argc){language=argv[++i];if(language!="en"&&language!="zh-CN")return 2;}
       else if(a=="--tab"&&i+1<argc)tab=argv[++i];
+      else if(a=="--esi-image"&&i+1<argc)esiImage=argv[++i];
       else if(a=="--device"&&i+1<argc)device=std::max(0,std::atoi(argv[++i]));
       else if(a=="--width"&&i+1<argc)width=std::max(1100,std::atoi(argv[++i]));
       else if(a=="--height"&&i+1<argc)height=std::max(720,std::atoi(argv[++i]));
       else {std::cerr<<"Unknown GUI argument: "<<a<<'\n';return 2;}}
     if(smokeCyclic){frames=std::max(60,frames);if(tab.empty())tab="diagnostics";}
+    if(!esiImage.empty()&&tab.empty())tab="eeprom";
+    if(smokeCyclic&&tab=="eeprom"){std::cerr<<"Cyclic UI smoke cannot run in Programming mode.\n";return 2;}
+    const auto startupMode=tab=="eeprom"?niceecatm::ConnectionMode::Programming:
+        smoke?niceecatm::ConnectionMode::Simulation:niceecatm::ConnectionMode::Hardware;
     if(!SDL_Init(SDL_INIT_VIDEO)){std::cerr<<SDL_GetError()<<'\n';return 1;}
     auto* window=SDL_CreateWindow("NiceECatM · EtherCAT Workbench",width,height,SDL_WINDOW_RESIZABLE|SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if(!window){SDL_Quit();return 1;}
@@ -55,7 +60,8 @@ int runDesktop(int argc,char**argv) {
     niceecatm::configureWorkbenchFonts(regular,small,title,value,mono);
     ImGui_ImplSDL3_InitForSDLRenderer(window,renderer);ImGui_ImplSDLRenderer3_Init(renderer);
     niceecatm::configureWorkbench(language.empty()?nullptr:language.c_str(),tab.empty()?nullptr:tab.c_str(),device);
-    niceecatm::configureWorkbenchSource(smoke);
+    niceecatm::configureWorkbenchEepromImage(esiImage.empty()?nullptr:esiImage.c_str());
+    niceecatm::configureWorkbenchMode(startupMode);
     niceecatm::updates::Checker updateChecker;
     niceecatm::configureWorkbenchUpdates(&updateChecker);
     // No network requests in CLI/smoke runs, and no master commands in this worker.
@@ -66,8 +72,13 @@ int runDesktop(int argc,char**argv) {
       return niceecatm::updates::Response{200,"{\"tag_name\":\""+version+"\",\"draft\":false,\"prerelease\":false}",{}};
     });
     niceecatm::Controller controller;
-    if(smoke){niceecatm::Command c;c.kind=niceecatm::CommandKind::Scan;c.connection.simulation=true;c.connection.primary="sim0";controller.submit(c);}
-    else {niceecatm::Command c;c.kind=niceecatm::CommandKind::RefreshAdapters;c.connection.simulation=false;controller.submit(c);}
+    if(startupMode==niceecatm::ConnectionMode::Programming){
+      // An EEPROM startup/smoke fixture selects Programming without opening
+      // an interface or sending frames to physical slaves.
+      niceecatm::Command c;c.kind=niceecatm::CommandKind::SetMode;c.connection.mode=startupMode;controller.submit(c);
+    }
+    else if(smoke){niceecatm::Command c;c.kind=niceecatm::CommandKind::Scan;c.connection.mode=startupMode;c.connection.primary="sim0";controller.submit(c);}
+    else {niceecatm::Command c;c.kind=niceecatm::CommandKind::RefreshAdapters;c.connection.mode=niceecatm::ConnectionMode::Hardware;controller.submit(c);}
     bool done=false,cyclicRequested=false;int frame=0,exitCode=0,cyclicSamples=0;uint64_t lastCyclicSample=0;
     while(!done){SDL_Event event;while(SDL_PollEvent(&event)){
       ImGui_ImplSDL3_ProcessEvent(&event);
@@ -110,6 +121,26 @@ int runDesktop(int argc,char**argv) {
             if(child->Active&&(child->Flags&ImGuiWindowFlags_Popup)) {
               std::cerr<<"Update check unexpectedly opened a popup.\n";exitCode=1;
             }
+          }
+        }
+        if(smoke&&tab=="eeprom") {
+          int checked=0;
+          for(const auto* child:ImGui::GetCurrentContext()->Windows) {
+            const char* leaf=std::strrchr(child->Name,'/');leaf=leaf?leaf+1:child->Name;
+            if(!child->Active)continue;
+            if(std::strncmp(leaf,"page-tabs_",10)==0&&child->ScrollMax.y>0.5f){std::cerr<<"EEPROM tab strip has vertical overflow.\n";exitCode=1;}
+            const bool card=std::strncmp(leaf,"eeprom-image_",13)==0||std::strncmp(leaf,"eeprom-target_",14)==0;
+            const bool body=std::strncmp(leaf,"eeprom-image-scroll_",20)==0||std::strncmp(leaf,"eeprom-target-scroll_",21)==0;
+            if(!card&&!body)continue;
+            ++checked;
+            if(child->ScrollMax.x>0.5f||(card&&child->ScrollMax.y>0.5f)) {
+              std::cerr<<"EEPROM layout overflow: "<<child->Name<<" ("<<child->ScrollMax.x<<", "<<child->ScrollMax.y<<")\n";exitCode=1;
+            }
+          }
+          if(checked!=4){std::cerr<<"EEPROM layout check did not find both cards and scrolling bodies.\n";exitCode=1;}
+          const auto snapshot=controller.snapshot();
+          if(snapshot.connection.mode!=niceecatm::ConnectionMode::Programming||snapshot.connected||snapshot.mapped||snapshot.running){
+            std::cerr<<"EEPROM UI smoke did not remain in offline Programming mode.\n";exitCode=1;
           }
         }
         if(smoke&&!smokeCyclic&&tab=="sdo"&&device==4) {

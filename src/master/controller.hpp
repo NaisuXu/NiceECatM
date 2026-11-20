@@ -14,13 +14,15 @@ public:
     Controller& operator=(const Controller&)=delete;
     // Returns zero if the bounded queue is full. Generation zero targets current connection.
     uint64_t submit(Command command);
-    // Marks a queued command canceled. Commands already owned by the I/O
-    // worker may finish; the worker still publishes their result normally.
+    // Queued commands are canceled before execution. Active EEPROM operations
+    // stop cooperatively after their current bounded transport transaction.
     bool cancel(uint64_t request);
     Snapshot snapshot() const;
     // Scripts may opt into a per-I/O-cycle snapshot stream.  The regular
     // snapshot remains throttled for the graphical workbench.
     void enableScriptSnapshots(bool enabled);
+    // GUI/runtime lifecycle gate, independent of the optional fast snapshots.
+    void setScriptRunning(bool running);
     Snapshot scriptSnapshot() const;
     // Adds a user-facing message to the same bounded log shown by the
     // workbench. This is used by script/runtime integrations that complete

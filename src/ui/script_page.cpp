@@ -353,7 +353,7 @@ void pumpRuntime(const Snapshot& snapshot) {
     for(const auto id:pending) {
         Result result;
         if(!script.bridge->result(id,result))continue;
-        script.runtime->complete(id,{result.ok,result.message,result.data});completed.push_back(id);
+        script.runtime->complete(id,{result.ok,result.message,result.data,result.adapters});completed.push_back(id);
     }
     if(!completed.empty()) {
         std::lock_guard<std::mutex> lock(script.runtimeMutex);
@@ -564,7 +564,7 @@ void apiCard() {
     // Keep each insertion focused on a single operation. The card scrolls
     // independently so the larger reference does not shrink the editor.
     snippetButton("List physical adapters","列出有线网卡","for index, adapter in ipairs(ecat.adapters()) do\n    log.info(index .. \": \" .. adapter.description .. \" | \" .. adapter.name)\nend\n");
-    snippetButton("Open hardware bus","打开真实总线","local adapters = ecat.adapters()\nassert(#adapters > 0, \"no wired Ethernet adapters\")\nlocal bus = ecat.open({ interface = adapters[1].name, simulation = false, cycle_us = 10000 })\nlocal devices = bus:scan()\n");
+        snippetButton("Open hardware bus","打开硬件总线","local adapters = ecat.adapters()\nassert(#adapters > 0, \"no wired Ethernet adapters\")\nlocal bus = ecat.open({ interface = adapters[1].name, simulation = false, cycle_us = 10000 })\nlocal devices = bus:scan()\n");
     snippetButton("Attach current bus","附加当前总线","local bus = ecat.current()\n");
     snippetButton("Scan devices","扫描设备","local devices = ecat.current():scan()\nlog.info(\"devices: \" .. #devices)\n");
     snippetButton("Disconnect","断开连接","ecat.current():disconnect()\n");
@@ -604,7 +604,11 @@ void actions(Controller& controller,const Snapshot& snapshot) {
     ImGui::SameLine();
     if(ImGui::Button(tr("Save","保存")))saveFile();
     ImGui::SameLine();
-    if(ImGui::Button(tr("Run","运行"))) {
+    ImGui::BeginDisabled(snapshot.connection.mode==ConnectionMode::Programming||ui.modeRequest!=0);
+    const bool run=ImGui::Button(tr("Run","运行"));
+    ImGui::EndDisabled();
+    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)&&snapshot.connection.mode==ConnectionMode::Programming)ImGui::SetTooltip("%s",tr("Scripts are unavailable in Programming mode.","编程模式下不能运行脚本。"));
+    if(run) {
         if(!pullEditorToSource()) {
             addLog(script.error.empty()?"The script contains too much text.":script.error,true);
             return;
@@ -617,8 +621,10 @@ void actions(Controller& controller,const Snapshot& snapshot) {
         if(!script.runtime)ensureInitialized(&controller);
         cancelPendingRequests();
         if(script.runtime&&script.runtime->load(script.name,std::string(script.source))) {
+            controller.setScriptRunning(true);
+            if(controller.snapshot().connection.mode==ConnectionMode::Programming){controller.setScriptRunning(false);addLog(tr("Scripts are unavailable in Programming mode.","编程模式下不能运行脚本。"),true);return;}
             if(script.runtime->start()){script.running=true;script.error.clear();addLog("Script started");}
-            else {script.error="The script runtime could not start.";addLog(script.error,true);}
+            else {controller.setScriptRunning(false);script.error="The script runtime could not start.";addLog(script.error,true);}
         } else {
             const auto view=script.runtime?script.runtime->snapshot():script::View{};
             script.error=view.error.empty()?"The script could not be loaded.":view.error;addLog(script.error,true);
@@ -628,7 +634,7 @@ void actions(Controller& controller,const Snapshot& snapshot) {
     if(ImGui::Button(tr("Stop","停止"))) {
         cancelPendingRequests();
         if(script.runtime)script.runtime->stop();
-        script.running=false;addLog("Script stopped");
+        script.running=false;controller.setScriptRunning(false);addLog("Script stopped");
     }
     ImGui::SameLine(0,8);
     const float statusY=ImGui::GetCursorPosY();ImGui::SetCursorPosY(statusY+2.0f);
@@ -639,11 +645,13 @@ void actions(Controller& controller,const Snapshot& snapshot) {
 
 void scriptTick(Controller& controller,const Snapshot& snapshot) {
     script.controller=&controller;
+    controller.setScriptRunning(script.running);
     if(script.initialized) {
         controller.enableScriptSnapshots(script.running);
         pumpRuntime(snapshot);
         controller.enableScriptSnapshots(script.running);
     }
+    controller.setScriptRunning(script.running);
 }
 
 bool scriptRunning() {return script.running;}
@@ -670,6 +678,7 @@ void scriptPage(Controller& controller,const Snapshot& snapshot) {
 void shutdownScriptPage() {
     cancelPendingRequests();
     if(script.runtime)script.runtime->stop();
+    if(script.controller)script.controller->setScriptRunning(false);
     script.runtime.reset();
     script.bridge.reset();
 }

@@ -10,6 +10,7 @@
 #endif
 #endif
 #include "ethercat/backend.hpp"
+#include "ethercat/eeprom_job.hpp"
 #include "ethercat/pdo_layout.hpp"
 #include "platform/pcap_runtime.h"
 #include <algorithm>
@@ -118,6 +119,14 @@ std::string numberHex(uint64_t value,unsigned width=4)
 {
     std::ostringstream out;out<<"0x"<<std::uppercase<<std::hex<<std::setw(width)<<std::setfill('0')<<value;return out.str();
 }
+uint16_t littleWord(const uint8_t* bytes){return uint16_t(bytes[0])|uint16_t(bytes[1])<<8;}
+uint32_t littleDword(const uint8_t* bytes){return uint32_t(littleWord(bytes))|uint32_t(littleWord(bytes+2))<<16;}
+bool validSiiHeader(const std::vector<uint8_t>& bytes){
+    if(bytes.size()<128)return false;
+    uint8_t crc=0xFF;
+    for(size_t i=0;i<14;++i){crc^=bytes[i];for(int bit=0;bit<8;++bit)crc=uint8_t((crc&0x80)?(crc<<1)^7:crc<<1);}
+    return crc==bytes[14];
+}
 class SoemBackend final: public Backend {
     std::unique_ptr<ecx_contextt> context_;
     std::unique_ptr<ecx_redportt> redundant_;
@@ -129,6 +138,146 @@ class SoemBackend final: public Backend {
     std::vector<uint16_t> requested_;
     CyclicStatePoll stateMonitor_;
     std::vector<Result> diagnostics_;
+
+    eeprom::Wire eepromWire(int slave){
+        const uint16_t position=uint16_t(1-slave);
+        return {
+            [this,position](uint16_t address,size_t size,void* bytes){return ecx_APRD(&context_->port,position,address,uint16_t(size),bytes,RegisterTimeoutUs);},
+            [this,position](uint16_t address,size_t size,const void* bytes){return ecx_APWR(&context_->port,position,address,uint16_t(size),const_cast<void*>(bytes),RegisterTimeoutUs);}
+        };
+    }
+    bool programmingTopology(int target,std::string& issue){
+        uint16_t type=0;
+        const int count=ecx_BRD(&context_->port,0,ECT_REG_TYPE,sizeof(type),&type,RegisterTimeoutUs);
+        if(count!=context_->slavecount){
+            issue="Programming topology BRD ECT_REG_TYPE WKC mismatch: expected "+std::to_string(context_->slavecount)+
+                  ", received "+std::to_string(count)+"; the link or slave count changed. Scan again.";
+            return false;
+        }
+        for(const auto& slave:view_.slaves){
+            uint8_t identity[4]{};
+            const uint16_t ap=uint16_t(1-slave.position);
+            const int wkc=ecx_APRD(&context_->port,ap,ECT_REG_TYPE,sizeof(identity),identity,RegisterTimeoutUs);
+            if(wkc!=1){
+                issue="Programming topology AP ECT_REG_TYPE WKC mismatch at slave "+std::to_string(slave.position)+
+                      " (AP "+std::to_string(ap)+"): expected 1, received "+std::to_string(wkc)+".";
+                return false;
+            }
+            const uint32_t actualId=littleDword(identity);
+            if(actualId!=slave.escId){
+                issue="Programming topology ESC identity mismatch at slave "+std::to_string(slave.position)+
+                      ": expected "+numberHex(slave.escId,8)+", received "+numberHex(actualId,8)+"; scan again.";
+                return false;
+            }
+        }
+        uint8_t state[6]{};
+        const uint16_t ap=uint16_t(1-target);
+        const int wkc=ecx_APRD(&context_->port,ap,ECT_REG_ALSTAT,sizeof(state),state,RegisterTimeoutUs);
+        if(wkc!=1){
+            issue="Programming target AP ECT_REG_ALSTAT WKC mismatch at slave "+std::to_string(target)+
+                  " (AP "+std::to_string(ap)+"): expected 1, received "+std::to_string(wkc)+".";
+            return false;
+        }
+        auto& slave=view_.slaves[size_t(target-1)];
+        slave.state=littleWord(state);slave.alCode=littleWord(state+4);
+        context_->slavelist[target].state=slave.state;context_->slavelist[target].ALstatuscode=slave.alCode;
+        if((slave.state&15)!=EC_STATE_INIT){
+            issue="Programming target actual AL state is "+numberHex(slave.state,4)+
+                  " (AL code "+numberHex(slave.alCode,4)+"); expected INIT. Scan again.";
+            return false;
+        }
+        return true;
+    }
+    Result eepromOperation(int target,size_t length,const std::vector<uint8_t>* image,const EepromControl& control){
+        if(view_.connection.mode!=ConnectionMode::Programming||!validSlave(target)||view_.running||view_.mapped)
+            return error("Select Programming, scan, and select an INIT slave before EEPROM access.");
+        if(length<128||length>eeprom::Session::MaxCapacity||length%2||(image&&image->size()!=length))
+            return error("EEPROM length must be an even size from 128 to 131072 bytes.");
+        const Slave original=view_.slaves[size_t(target-1)];
+        if(image&&!validSiiHeader(*image))return error("EEPROM image configuration CRC is invalid.");
+        auto report=[&](EepromStage stage,size_t completed,bool written,const std::string& detail){
+            view_.eeprom={stage,completed,image?length*2:length,written,detail};
+            if(control.progress)control.progress(view_.eeprom);
+        };
+        const auto cancelled=[&]{return control.cancelled&&control.cancelled();};
+        report(EepromStage::Preparing,0,false,"Checking programming target and EEPROM ownership");
+        std::string issue;
+        if(cancelled()){report(EepromStage::Cancelled,0,false,"Cancelled before EEPROM access");return error("EEPROM operation cancelled; no EEPROM data was written.");}
+        if(!programmingTopology(target,issue)){report(EepromStage::Failed,0,false,issue);return error(issue);}
+        eeprom::Session session(eepromWire(target),cancelled);
+        size_t completed=0;
+        auto finish=[&](bool success,EepromStage stage,std::string message,std::vector<uint8_t> data=std::vector<uint8_t>{}){
+            std::string cleanup;
+            if(!session.finish(cleanup)){success=false;stage=EepromStage::Failed;message+=" "+cleanup;data.clear();}
+            if(session.writeAttempted()){
+                auto& changed=view_.slaves[size_t(target-1)];
+                changed.eepromIdentityKnown=false;changed.eepromSizeKnown=false;changed.eepromCapacity=0;
+                changed.esiFile.clear();changed.esiStatus.clear();changed.sdoDictionary.reset();changed.esiSdoDictionary.reset();changed.pdoEntries.clear();
+            }
+            if(!success&&session.writeAttempted())message+=" EEPROM may be partially programmed; no rollback was performed.";
+            report(stage,completed,session.writeAttempted(),message);
+            if(!success)return error(message);
+            view_.status=message;return Result{true,std::move(message),std::move(data)};
+        };
+        if(!session.begin(issue))return finish(false,EepromStage::Failed,issue);
+        // Re-read every available identifying field immediately before the
+        // operation. ESI descriptions never substitute for physical identity.
+        if(original.eepromIdentityKnown){
+            std::vector<uint8_t> header;
+            if(!session.read(0,128,128,header,issue))return finish(false,cancelled()?EepromStage::Cancelled:EepromStage::Failed,issue);
+            if(!validSiiHeader(header)||littleDword(header.data()+16)!=original.vendor||littleDword(header.data()+20)!=original.product||
+               littleDword(header.data()+24)!=original.revision||littleDword(header.data()+28)!=original.serial||littleWord(header.data()+8)!=original.eepromAlias)
+                return finish(false,EepromStage::Failed,"Programming target SII identity changed since scanning; scan again.");
+        }
+        auto nextProbe=Clock::now(),nextProgress=Clock::now();
+        auto checkpoint=[&](){
+            if(cancelled()){issue="EEPROM operation cancelled.";return false;}
+            if(Clock::now()>=nextProbe){
+                if(!programmingTopology(target,issue))return false;
+                nextProbe=Clock::now()+std::chrono::milliseconds(100);
+            }
+            return true;
+        };
+        if(image){
+            // Read the current image first.  Besides avoiding unnecessary
+            // EEPROM wear, this is required by devices such as AX58100 whose
+            // protected configuration/category words reject a redundant write.
+            std::vector<uint8_t> existing;
+            report(EepromStage::Writing,0,false,"Reading current EEPROM before programming");
+            if(!session.read(0,length,length,existing,issue))
+                return finish(false,cancelled()?EepromStage::Cancelled:EepromStage::Failed,"EEPROM pre-write read failed: "+issue);
+            report(EepromStage::Writing,0,false,"Writing EEPROM");
+            for(size_t offset=0;offset<length;offset+=2){
+                if(!checkpoint())return finish(false,cancelled()?EepromStage::Cancelled:EepromStage::Failed,issue);
+                if(existing.size()==length&&littleWord(existing.data()+offset)==littleWord(image->data()+offset)){
+                    completed=offset+2;continue;
+                }
+                if(!session.writeWord(offset,littleWord(image->data()+offset),issue))
+                    return finish(false,EepromStage::Failed,"EEPROM write failed at word "+numberHex(offset/2)+": "+issue);
+                completed=offset+2;
+                if(Clock::now()>=nextProgress){report(EepromStage::Writing,completed,true,"Writing EEPROM");nextProgress=Clock::now()+std::chrono::milliseconds(100);}
+            }
+        }
+        const auto readStage=image?EepromStage::Verifying:EepromStage::Reading;
+        report(readStage,completed,session.writeAttempted(),image?"Reading back and comparing EEPROM":"Reading EEPROM");
+        std::vector<uint8_t> contents;contents.reserve(length);
+        for(size_t offset=0;offset<length;offset+=4){
+            if(!checkpoint())return finish(false,cancelled()?EepromStage::Cancelled:EepromStage::Failed,issue);
+            std::vector<uint8_t> bytes;
+            const size_t count=std::min(size_t(4),length-offset);
+            if(!session.read(offset,count,length,bytes,issue))
+                return finish(false,cancelled()?EepromStage::Cancelled:EepromStage::Failed,
+                              (cancelled()?"EEPROM read cancelled at byte ":"EEPROM read failed at byte ")+numberHex(offset)+": "+issue);
+            if(image){
+                for(size_t i=0;i<bytes.size();++i)if(bytes[i]!=(*image)[offset+i])
+                    return finish(false,EepromStage::Failed,"EEPROM readback mismatch at byte "+numberHex(offset+i)+": expected "+numberHex((*image)[offset+i],2)+", received "+numberHex(bytes[i],2)+".");
+            }else contents.insert(contents.end(),bytes.begin(),bytes.end());
+            completed=(image?length:0)+offset+count;
+            if(Clock::now()>=nextProgress){report(readStage,completed,session.writeAttempted(),image?"Comparing full EEPROM readback":"Reading EEPROM");nextProgress=Clock::now()+std::chrono::milliseconds(100);}
+        }
+        if(!checkpoint())return finish(false,cancelled()?EepromStage::Cancelled:EepromStage::Failed,issue);
+        return finish(true,EepromStage::Complete,image?"EEPROM written and fully verified; activation pending. Follow the device's reload or power-cycle procedure.":"EEPROM read completed; all bytes were received successfully.",std::move(contents));
+    }
 
     Result error(const std::string& message) {
         view_.status=message;return {false,message,{}};
@@ -357,11 +506,20 @@ class SoemBackend final: public Backend {
         // a sub-millisecond target period. Do not mistake that latency for a
         // missing frame by shrinking the receive window to half the period.
         // Allow at least SOEM's normal receive timeout, with a bounded wait for
-        // slower periods. The controller still records actual/missed cycles;
-        // this does not make Windows a realtime EtherCAT master.
-        const int receiveTimeout=std::clamp(view_.connection.cycleUs,EC_TIMEOUTRET,10000);
+        // slower periods. A redundant port may be disconnected while the
+        // other path remains usable; cap that missing-path wait to a quarter
+        // cycle so redundancy does not silently double the target period. The
+        // controller still records actual/missed cycles; this does not make
+        // Windows a realtime EtherCAT master.
+        const bool redundant=context_&&context_->port.redport!=nullptr;
+        const int receiveTimeout=redundant?
+            std::clamp(view_.connection.cycleUs/4,EC_TIMEOUTRET,2000):
+            std::clamp(view_.connection.cycleUs,EC_TIMEOUTRET,10000);
 #else
-        const int receiveTimeout=std::clamp(view_.connection.cycleUs/2,100,2000);
+        const bool redundant=context_&&context_->port.redport!=nullptr;
+        const int receiveTimeout=redundant?
+            std::clamp(view_.connection.cycleUs/4,100,2000):
+            std::clamp(view_.connection.cycleUs/2,100,2000);
 #endif
         const auto& group=context_->grouplist[0];
         if(group.Obytes==0 && group.Ibytes==0 && group.mbxstatuslength==0) {
@@ -375,6 +533,18 @@ class SoemBackend final: public Backend {
         }
         ecx_send_processdata(context_.get());
         view_.wkc=ecx_receive_processdata(context_.get(),receiveTimeout);
+        // Npcap can occasionally lose a process-data frame even when the
+        // EtherCAT chain is healthy. A single bounded resend keeps that
+        // isolated capture miss from being reported as a stale I/O sample.
+        // The retry uses the same output image and never changes the target
+        // state; it is only attempted after an incomplete response.
+        const int expected=view_.expectedWkc;
+        if(view_.wkc<expected) {
+            ecx_send_processdata(context_.get());
+            const int retryTimeout=std::clamp(receiveTimeout/2,EC_TIMEOUTRET,2000);
+            const int retry=ecx_receive_processdata(context_.get(),retryTimeout);
+            if(retry>view_.wkc)view_.wkc=retry;
+        }
     }
     bool confirmState(int slave,uint16_t requested,bool exchangeFrames) {
         auto deadline=Clock::now()+StateTimeout;
@@ -406,7 +576,7 @@ class SoemBackend final: public Backend {
         return message.str();
     }
 public:
-    SoemBackend() {view_.simulation=false;view_.connection.simulation=false;view_.status="Hardware mode: choose an interface and scan";}
+    SoemBackend() {view_.simulation=false;view_.connection.mode=ConnectionMode::Hardware;view_.status="Hardware mode: choose an interface and scan";}
     ~SoemBackend() override {close();}
     Result adapters() override {
         view_.adapters.clear();
@@ -431,6 +601,7 @@ public:
         return done("Physical wired Ethernet interfaces enumerated: "+std::to_string(view_.adapters.size()));
     }
     Result scan(const Connection& config) override {
+        if(config.mode==ConnectionMode::Programming)return error("Use the dedicated Programming scan without PDO mapping.");
         if(view_.running)return error("Stop cyclic exchange before scanning");
         if(config.primary.empty())return error("Select a primary network interface");
         if(config.redundant && (config.secondary.empty() || config.primary==config.secondary))
@@ -444,7 +615,7 @@ public:
 #endif
         if(!validCycle(config.cycleUs))
             return error("Target cycle must be 500, 1000, 2000, 5000, 10000, 20000, 50000 or 100000 us");
-        close();view_.connection=config;view_.connection.simulation=false;view_.simulation=false;
+        close();view_.connection=config;view_.connection.mode=ConnectionMode::Hardware;view_.simulation=false;
         adapters();
 #ifdef _WIN32
         if(!niceecatm_pcap_available())return error(view_.driver);
@@ -523,7 +694,119 @@ public:
         if(!preOpConfirmed)return error(errors("Scan did not finish in PRE-OP; "+stateFailure(0)));
         return done(errors("Scanned "+std::to_string(found)+" real EtherCAT slave(s); mapping prepared; cyclic exchange stopped"));
     }
+    Result scanProgramming(const Connection& config,const EepromControl& control) override {
+        if(view_.running)return error("Stop cyclic exchange before programming scan.");
+        if(config.primary.empty()||config.primary.size()>=EC_MAXLEN_ADAPTERNAME)
+            return error("Select a valid primary network interface for programming.");
+        if(config.redundant||config.overlap)return error("Programming requires a single interface without PDO mapping.");
+#ifndef _WIN32
+        if(config.primary.size()>=IFNAMSIZ)return error("Linux network interface names must be shorter than IFNAMSIZ");
+#endif
+        close();view_.connection=config;view_.connection.mode=ConnectionMode::Programming;view_.simulation=false;
+        view_.eeprom={EepromStage::Preparing,0,0,false,"Enumerating responding ESCs without PDO mapping"};
+        if(control.progress)control.progress(view_.eeprom);
+        const auto cancelled=[&]{return control.cancelled&&control.cancelled();};
+        auto fail=[&](std::string message,bool wasCancelled=false){
+            close();view_.eeprom={wasCancelled?EepromStage::Cancelled:EepromStage::Failed,0,0,false,message};
+            if(control.progress)control.progress(view_.eeprom);
+            return error(message);
+        };
+        if(cancelled())return fail("Programming scan cancelled.",true);
+        adapters();
+#ifdef _WIN32
+        if(!niceecatm_pcap_available())return fail(view_.driver);
+#endif
+        context_=std::make_unique<ecx_contextt>();
+#ifndef _WIN32
+        context_->port.sockhandle=-1;
+#endif
+        initialized_=true;
+        if(ecx_init(context_.get(),config.primary.c_str())<=0){
+#ifdef _WIN32
+            return fail(std::string("Cannot open programming interface: ")+niceecatm_pcap_error());
+#else
+            return fail(std::string("Cannot open programming interface: ")+std::strerror(errno));
+#endif
+        }
+        uint16_t type=0;
+        const int count=ecx_BRD(&context_->port,0,ECT_REG_TYPE,sizeof(type),&type,RegisterTimeoutUs);
+        if(count<=0)return fail("Programming scan received no responding ESC; check the interface, slave power and cabling.");
+        if(count>=EC_MAXSLAVE)return fail("Programming scan exceeds the compiled slave capacity.");
+        // Deliberately no config_init, address assignment, DC, mailbox or PDO
+        // configuration. AP positions work even when SII is completely blank.
+        context_->slavecount=count;context_->manualstatechange=1;
+        requested_.assign(size_t(count)+1,EC_STATE_INIT);view_.slaves.reserve(size_t(count));
+        for(int position=1;position<=count;++position){
+            if(cancelled())return fail("Programming scan cancelled.",true);
+            const uint16_t ap=uint16_t(1-position);
+            uint8_t identity[4]{};
+            if(ecx_APRD(&context_->port,ap,ECT_REG_TYPE,sizeof(identity),identity,RegisterTimeoutUs)!=1)
+                return fail("Programming ESC read failed at slave "+std::to_string(position)+".");
+            // A slave may still carry an AL error from the normal master.
+            // INIT|ACK is the standard SOEM transition used to clear it;
+            // blank/invalid SII devices are still accepted below when they
+            // report INIT with the error bit retained.
+            const uint8_t request[2]{uint8_t(EC_STATE_INIT|EC_STATE_ACK),0};
+            if(ecx_APWR(&context_->port,ap,ECT_REG_ALCTL,sizeof(request),const_cast<uint8_t*>(request),RegisterTimeoutUs)!=1)
+                return fail("Programming INIT request failed at slave "+std::to_string(position)+".");
+            // The ACK bit is a control command, not a stable AL state. A
+            // follow-up plain INIT request clears ESCs that mirror that bit
+            // in the status register while remaining in INIT.
+            const uint8_t plainInit[2]{uint8_t(EC_STATE_INIT),0};
+            if(ecx_APWR(&context_->port,ap,ECT_REG_ALCTL,sizeof(plainInit),const_cast<uint8_t*>(plainInit),RegisterTimeoutUs)!=1)
+                return fail("Programming INIT state request failed at slave "+std::to_string(position)+".");
+            const auto deadline=Clock::now()+StateTimeout;
+            uint8_t actual[6]{};bool confirmed=false;
+            do {
+                if(cancelled())return fail("Programming scan cancelled.",true);
+                if(ecx_APRD(&context_->port,ap,ECT_REG_ALSTAT,sizeof(actual),actual,RegisterTimeoutUs)!=1)
+                    return fail("Cannot read actual AL state during programming scan at slave "+std::to_string(position)+".");
+                if((littleWord(actual)&15)==EC_STATE_INIT){confirmed=true;break;}
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }while(Clock::now()<deadline);
+            if(!confirmed)return fail("Slave "+std::to_string(position)+" did not confirm INIT for programming.");
+            Slave slave;slave.position=position;slave.escId=littleDword(identity);
+            slave.state=littleWord(actual);slave.requested=EC_STATE_INIT;slave.alCode=littleWord(actual+4);
+            slave.name="Unknown / blank SII";
+            eeprom::Session session(eepromWire(position),cancelled);
+            std::string issue;std::vector<uint8_t> header;
+            const bool read=session.begin(issue)&&session.read(0,128,128,header,issue);
+            std::string cleanup;
+            if(!session.finish(cleanup))return fail("Slave "+std::to_string(position)+": "+cleanup);
+            if(cancelled())return fail("Programming scan cancelled.",true);
+            if(read&&validSiiHeader(header)){
+                slave.vendor=littleDword(header.data()+16);slave.product=littleDword(header.data()+20);
+                slave.revision=littleDword(header.data()+24);slave.serial=littleDword(header.data()+28);slave.eepromAlias=littleWord(header.data()+8);
+                slave.eepromIdentityKnown=slave.vendor!=0&&slave.vendor!=0xFFFFFFFF&&slave.product!=0xFFFFFFFF;
+                const size_t capacity=(size_t(littleWord(header.data()+124))+1)*128;
+                slave.eepromSizeKnown=capacity<=eeprom::Session::MaxCapacity;
+                slave.eepromCapacity=slave.eepromSizeKnown?uint32_t(capacity):0;
+                if(slave.eepromIdentityKnown)slave.name="SII "+numberHex(slave.vendor,8)+" / "+numberHex(slave.product,8);
+            }
+            if(!read)diagnostics_.push_back({false,"Slave "+std::to_string(position)+": EEPROM inventory unavailable: "+issue,{}});
+            auto& native=context_->slavelist[position];
+            native.state=slave.state;native.ALstatuscode=slave.alCode;
+            native.eep_man=slave.vendor;native.eep_id=slave.product;native.eep_rev=slave.revision;native.eep_ser=slave.serial;
+            std::snprintf(native.name,sizeof(native.name),"%s",slave.name.c_str());
+            view_.slaves.push_back(std::move(slave));
+            view_.eeprom={EepromStage::Preparing,size_t(position),size_t(count),false,"Reading programming inventory"};
+            if(control.progress)control.progress(view_.eeprom);
+        }
+        view_.connected=true;view_.mapped=false;view_.running=false;
+        std::string issue;
+        if(!programmingTopology(1,issue))return fail(issue);
+        view_.eeprom={EepromStage::Idle,0,0,false,"Programming inventory ready; INIT confirmed"};
+        if(control.progress)control.progress(view_.eeprom);
+        return done("Programming scan complete: "+std::to_string(count)+" slave(s), INIT confirmed, no PDO mapping.");
+    }
+    Result readEeprom(int slave,size_t bytes,const EepromControl& control) override {
+        return eepromOperation(slave,bytes,nullptr,control);
+    }
+    Result writeEeprom(int slave,const std::vector<uint8_t>& image,const EepromControl& control) override {
+        return eepromOperation(slave,image.size(),&image,control);
+    }
     Result setCycle(int cycleUs) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("Cycle configuration is unavailable in Programming mode.");
         if(!validCycle(cycleUs))return error("Target cycle must be 500, 1000, 2000, 5000, 10000, 20000, 50000 or 100000 us");
         if(!view_.connected || !context_)return error("Scan devices first");
         if(view_.running)return error("Stop cyclic exchange before changing the target cycle");
@@ -537,6 +820,7 @@ public:
         return done("Target cycle updated while the bus is stopped");
     }
     Result state(int slave,AlState desired) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("Ordinary state control is unavailable in Programming mode.");
         if(!view_.connected || !context_ || slave<0 || slave>context_->slavecount)return error("No connected slave at the requested position");
         const auto requested=static_cast<uint16_t>(desired);
         if(requested!=1 && requested!=2 && requested!=4 && requested!=8)return error("Unsupported EtherCAT state request");
@@ -565,6 +849,7 @@ public:
         return done(std::string("Confirmed ")+stateName(requested)+" for "+(slave?"slave "+std::to_string(slave):"all slaves"));
     }
     Result start() override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("Cyclic exchange is unavailable in Programming mode.");
         if(!view_.connected || !view_.mapped)return error("Scan and validate process mapping before starting");
         stateMonitor_.reset();statePoll_=Clock::now();
         ecx_readstate(context_.get());updateSlaves();
@@ -573,6 +858,7 @@ public:
         return done("Cyclic exchange started; actual AL states remain independent");
     }
     Result stop() override {
+        if(view_.connection.mode==ConnectionMode::Programming)return done("Programming mode has no cyclic exchange.");
         if(!view_.connected)return done("Cyclic exchange stopped");
         stateMonitor_.reset();
         ecx_readstate(context_.get());bool ok=true;
@@ -586,6 +872,7 @@ public:
         return done("Cyclic exchange stopped; OP slaves confirmed SAFE-OP");
     }
     Result readRegister(int slave,uint16_t offset,int length) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("Ordinary register access is unavailable in Programming mode.");
         if(!validSlave(slave))return error("Select a connected slave");
         if(length<1 || length>256 || uint32_t(offset)+uint32_t(length)>65536)return error("Register read must be 1..256 bytes within ESC address space");
         if(view_.running)return error("Stop cyclic exchange before synchronous ESC access in this build");
@@ -595,6 +882,7 @@ public:
         view_.status="ESC read completed";return {true,view_.status,std::move(bytes)};
     }
     Result writeRegister(int slave,uint16_t offset,const std::vector<uint8_t>& bytes) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("Ordinary register access is unavailable in Programming mode.");
         if(!validSlave(slave))return error("Select a connected slave");
         if(bytes.empty() || bytes.size()>256 || size_t(offset)+bytes.size()>65536)return error("Invalid register write length");
         if(view_.running)return error("Stop cyclic exchange before synchronous ESC access in this build");
@@ -619,6 +907,7 @@ public:
         return done("ESC register write acknowledged");
     }
     Result readSdoDictionary(int slave) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("SDO access is unavailable in Programming mode.");
         if(!validSlave(slave))return error("Select a connected slave");
         if(view_.running)return error("Stop cyclic exchange before reading the SDO dictionary.");
         auto& native=context_->slavelist[slave];
@@ -636,6 +925,7 @@ public:
         return dictionary->complete?done(dictionary->status):error(dictionary->status);
     }
     Result readSdo(int slave,uint16_t index,uint8_t sub,int capacity) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("SDO access is unavailable in Programming mode.");
         if(!validSlave(slave))return error("Select a connected slave");
         if(view_.running)return error("Stop cyclic exchange before synchronous SDO access in this build");
         if(capacity<1 || capacity>65536)return error("SDO receive capacity must be 1..65536 bytes");
@@ -651,6 +941,7 @@ public:
         return {true,view_.status,std::move(data)};
     }
     Result writeSdo(int slave,uint16_t index,uint8_t sub,const std::vector<uint8_t>& data) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("SDO access is unavailable in Programming mode.");
         if(!validSlave(slave))return error("Select a connected slave");
         if(view_.running)return error("Stop cyclic exchange before synchronous SDO access in this build");
         if(data.empty() || data.size()>65536)return error("SDO write must contain 1..65536 bytes");
@@ -664,6 +955,7 @@ public:
         return done(view_.mapped?"SDO write acknowledged":"SDO mapping object written; scan again to rebuild process mapping");
     }
     Result writeOutput(int slave,int offset,const std::vector<uint8_t>& data) override {
+        if(view_.connection.mode==ConnectionMode::Programming)return error("PDO access is unavailable in Programming mode.");
         if(!validSlave(slave))return error("Select a connected slave");
         if(!view_.mapped)return error("Process mapping is invalid; scan again");
         const auto& target=context_->slavelist[slave];

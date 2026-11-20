@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-面向设备开发与台架测试的 EtherCAT 图形工具，采用 C++17、CMake、SOEM V2、SDL3 和 Dear ImGui。提供设备扫描、AL 状态控制、PDO 信号测试、ESC 寄存器访问、CoE SDO 访问和 Lua 自动化。
+面向设备开发与台架测试的 EtherCAT 图形工具，采用 C++17、CMake、SOEM V2、SDL3 和 Dear ImGui。提供设备扫描、AL 状态控制、PDO 信号测试、ESC 寄存器访问、CoE SDO 访问、EEPROM 编程和 Lua 自动化。
 
 Windows x64 是当前本机验证的平台。Ubuntu x86/ARM 为构建目标，仍需对应平台与硬件验证；不同平台和架构分别生成各自的可执行文件。
 
@@ -52,6 +52,10 @@ Linux 需要 C++17 编译器、CMake 3.28+、Make，以及所选 SDL 显示后�
 默认目标周期为 10 ms，可选 500 us、1、2、5、10、20、50、100 ms。它们是请求周期，实际表现以统计值为准，不提供硬实时保证。同步 ESC 寄存器和 CoE SDO 访问要求停止周期交换。
 
 CoE / SDO 显示所选从站的对象字典，来源包括匹配的 ESI，以及从站支持时在 PRE-OP 获取的在线 SDO Information。选择条目可填入地址和类型，当前值需手动读取。列表区分来源并提示获取不完整的情况，不会把 ESI 默认值显示成设备当前值。
+
+左侧提供**模拟／硬件／编程**三种模式，默认硬件；断开连接、停止脚本且无活动操作时可以切换。编程模式使用单网口、专用 INIT 扫描，不进行 PDO 映射。**EEPROM** 页仅编程模式可用，支持从受支持的固定设备 ESI 描述或有效 SII BIN 离线准备／导出镜像、读取 EEPROM，以及烧录所选从站并完整回读比较。每次写入均确认目标、镜像与容量，Vendor ID／Product Code 不同会提示但允许烧录；写入后取消不会恢复原内容。按设备要求使配置生效，再断开、选择硬件并重新扫描后使用普通 I/O。详见 [EEPROM 使用说明](docs/native.zh-CN.md#eeprom-编程)。
+
+`NiceECatM --esi-image file.xml`（或 `file.bin`）会在离线编程页面打开镜像，不扫描设备，也不打开抓包连接。
 
 界面默认英文，语言偏好保存在可执行文件旁的 `preferences.ini`，脚本保存在旁边的 `scripts/`。软件版本采用构建时间 `yyyymmddhhmm`，界面、CLI 帮助与 Windows 文件属性保持一致。
 

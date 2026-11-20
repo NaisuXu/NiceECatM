@@ -68,7 +68,7 @@ Disabling Interrupt Moderation substantially reduced typical receive delivery ti
 
 WKC failures, RTT p99 and timeout counts did not consistently improve. These short sequential tests establish a useful latency/CPU setting for this machine, not deterministic timing or a complete stability fix. Estimated mean intervals use duration/counter deltas and have a small stop-command boundary bias. The probe's maximum-jitter field also includes pre-sampling output checks, so it is not a precise 5-second-window statistic and is omitted above.
 
-Adapter restarts intentionally interrupt the link and can increase ESC lost-link counters. Such cross-configuration increases must not be treated as spontaneous failures during a steady run; inspect counter deltas within each run. Forwarded RX counters need a separate interpretation, explained below. Original settings were restored after this A/B group, and backups/settings/logs were retained under `build/communication-diagnostics/admin-20261114-140501/`.
+Adapter restarts intentionally interrupt the link and can increase ESC lost-link counters. Such cross-configuration increases must not be treated as spontaneous failures during a steady run; inspect counter deltas within each run. Forwarded RX counters need a separate interpretation, explained below. Original settings were restored after this A/B group.
 
 ## Current Controller: 30-second runs
 
@@ -85,7 +85,7 @@ The current Controller was then tested with Interrupt Moderation off, EEE on, No
 
 At 5 ms, average timing was close to the target, but exchanges still failed occasionally. Neither mapping mode sustained the 500 us target, and overlapped mapping did not establish a timing or stability improvement. The mean-interval and maximum-jitter sampling limitations described above also apply here.
 
-ESC reads bracketed each run, including the output checks and state transitions. In the three normal-mapping runs, slave 2's `0x0308` counter changed 1→66, 0→5 and 0→3; its lost-link counters stayed unchanged. In all three overlapped runs, the forwarded counter stayed 0→0 and the lost-link counters stayed unchanged, yet WKC failures remained. These counters do not establish which EtherCAT exchanges failed or identify mapping as the cause. The original Interrupt Moderation / EEE values were restored to on / on after testing. Logs are `im-long-mapping-0.log` and `im-long-mapping-1.log` in the diagnostics directory above.
+ESC reads bracketed each run, including the output checks and state transitions. In the three normal-mapping runs, slave 2's `0x0308` counter changed 1→66, 0→5 and 0→3; its lost-link counters stayed unchanged. In all three overlapped runs, the forwarded counter stayed 0→0 and the lost-link counters stayed unchanged, yet WKC failures remained. These counters do not establish which EtherCAT exchanges failed or identify mapping as the cause. The original Interrupt Moderation / EEE values were restored to on / on after testing.
 
 ## Interpreting ESC error counters
 
@@ -109,7 +109,7 @@ After the fix, baseline → IPv4/IPv6 bindings off → bindings restored were te
 
 The 5 ms OP mean intervals were 5.026 / 5.033 / 5.028 ms; at 500 us they were 0.876 / 0.906 / 0.858 ms, in the same phase order. WKC abnormalities remained, so disabling IP did not solve cycle timing or exchange stability. Slave 2's forwarded-count increments at 5 ms / 1 ms / 500 us were 34 / 2 / 1 before disabling IP, 0 / 0 / 0 with IP off, and 3 / 0 / 0 after restoration; lost-link counters stayed unchanged within runs. This supports the background-frame explanation above, without proving it frame by frame or equating forwarded counts with failed EtherCAT cycles.
 
-Final verification found no differences from the original 47 advanced settings or 21 bindings. Interrupt Moderation and EEE were both back on, link status was Up at 100 Mbps, NIC RX/TX errors and discards were zero, and the power plan remained Balanced. The product change is the IP-independent discovery fix; no experimental timing policy was enabled. Complete `fixed-bindings-baseline-*`, `fixed-ip-bindings-off-*`, `fixed-bindings-restored-*` logs and `final-verification.json` are in the diagnostics directory above.
+Final verification found no differences from the original 47 advanced settings or 21 bindings. Interrupt Moderation and EEE were both back on, link status was Up at 100 Mbps, NIC RX/TX errors and discards were zero, and the power plan remained Balanced. The product change is the IP-independent discovery fix; no experimental timing policy was enabled.
 
 ## Software trials with Interrupt Moderation disabled
 
@@ -117,7 +117,7 @@ Normal/Highest worker priority, an additional `timeBeginPeriod(1)` and High QoS 
 
 A separate prototype linked the same backend library to an experimental copy of the Controller. It woke the blocking timer up to 50/100/200 us early, then used a bounded spin until the original deadline; the requested bus deadline was unchanged. At the 500 us target, a 200 us spin allowance changed the estimated mean interval from 0.922 ms with no spin to 0.588 ms, while worker CPU rose from 16.5% to 25.3% of one core. A final no-spin repeat returned to 0.896 ms / 15.3% CPU. The 200 us sample still recorded 1,532 skipped periods and 18 WKC errors in 8,517 cycles over 5 seconds.
 
-This prototype remains under `build/` and is not a release default or a public product option. These sequential short runs indicate a timing/CPU trade-off, not a 500 us guarantee. GUI rendering and script load were not included, and the remaining WKC failures prevent claiming a complete stability fix.
+This experiment is not a release default or a public product option. These sequential short runs indicate a timing/CPU trade-off, not a 500 us guarantee. GUI rendering and script load were not included, and the remaining WKC failures prevent claiming a complete stability fix.
 
 ## Tune in this order
 

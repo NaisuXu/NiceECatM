@@ -4,7 +4,9 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,8 +14,10 @@ namespace niceecatm {
 enum class AlState : uint16_t { Init=1, PreOp=2, SafeOp=4, Op=8 };
 const char* stateName(uint16_t state);
 struct Adapter { std::string name, description; };
+enum class ConnectionMode { Simulation, Hardware, Programming };
 struct Connection {
-    bool simulation=true, redundant=false, overlap=false;
+    ConnectionMode mode=ConnectionMode::Hardware;
+    bool redundant=false, overlap=false;
     std::string primary, secondary;
     int cycleUs=10000;
 };
@@ -60,6 +64,11 @@ struct Slave {
     uint32_t vendor=0, product=0, revision=0, serial=0;
     uint16_t state=1, requested=1, alCode=0, address=0, mailboxProtocols=0;
     bool dc=false;
+    // Programming inventory contains only values successfully read from the
+    // physical target. A blank/invalid SII never borrows its identity from ESI.
+    bool eepromIdentityKnown=false, eepromSizeKnown=false;
+    uint32_t eepromCapacity=0, escId=0;
+    uint16_t eepromAlias=0;
     unsigned inputBits=0, outputBits=0, inputStartBit=0, outputStartBit=0;
     int inputOffset=-1, outputOffset=-1;
     std::vector<uint8_t> inputs, outputs;
@@ -78,9 +87,29 @@ struct Result {
     bool ok=false;
     std::string message;
     std::vector<uint8_t> data;
+    // Enumeration results do not replace the active connection or its list.
+    std::optional<std::vector<Adapter>> adapters{};
+};
+enum class EepromStage { Idle, Preparing, Reading, Writing, Verifying, Complete, Cancelled, Failed };
+struct EepromProgress {
+    EepromStage stage=EepromStage::Idle;
+    size_t completed=0,total=0;
+    bool written=false;
+    std::string detail;
+    // The target scope prevents a completed job or inventory scan from being
+    // rendered beside a different selected slave. request is the controller
+    // ticket for active operations; zero denotes inventory progress.
+    uint64_t request=0;
+    int slave=0;
+};
+// Callbacks execute on the Controller's sole I/O owner. Cancellation is checked
+// between bounded register transactions; the GUI never touches a SOEM context.
+struct EepromControl {
+    std::function<bool()> cancelled;
+    std::function<void(const EepromProgress&)> progress;
 };
 struct Snapshot {
-    bool simulation=true, connected=false, mapped=false, running=false, busy=false;
+    bool simulation=false, connected=false, mapped=false, running=false, busy=false;
     Connection connection;
     uint64_t generation=0, completed=0, cycles=0, missed=0, errors=0;
     int wkc=0, expectedWkc=0;
@@ -93,8 +122,9 @@ struct Snapshot {
     std::vector<Slave> slaves;
     std::vector<LogEntry> logs;
     Result result;
+    EepromProgress eeprom;
 };
-enum class CommandKind { RefreshAdapters, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, ReadSdoDictionary, WriteOutput };
+enum class CommandKind { RefreshAdapters, SetMode, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, ReadSdoDictionary, WriteOutput, ReadEeprom, WriteEeprom };
 struct Command {
     CommandKind kind=CommandKind::RefreshAdapters;
     uint64_t generation=0;

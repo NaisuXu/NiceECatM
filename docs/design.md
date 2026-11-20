@@ -29,9 +29,9 @@ Lua bus and signal handles resolve operations against the current controller. Th
 | `src/app` | Process entry, CLI and SDL desktop lifecycle |
 | `src/model` | Shared value types and typed PDO conversion |
 | `src/master` | Command queue, backend ownership, cycles and snapshots |
-| `src/ethercat` | SOEM and simulation implementations, mapping checks |
+| `src/ethercat` | SOEM and simulation implementations, mapping checks and bounded EEPROM transactions |
 | `src/script` | Lua state, scheduler and controller bridge |
-| `src/esi` | XML catalog and description matching |
+| `src/esi` | XML catalog, description matching and SII image validation/generation |
 | `src/platform` | Executable-relative paths and Windows capture binding |
 | `src/ui` | Workbench layout, pages and interaction |
 
@@ -55,9 +55,17 @@ The host target period is selectable from 500 us to 100 ms. Actual cycle and max
 
 Lua timers use elapsed host time. Cycle callbacks check bus cycle counters in received snapshots and may skip intermediate cycles; they cannot provide a hard real-time per-frame control loop. Callbacks run serially and must return.
 
+## EEPROM programming
+
+Simulation, Hardware and Programming are mutually exclusive connection modes, defaulting to Hardware. Mode changes require a disconnected bus, stopped scripts and no active job. Programming uses the same I/O owner and SOEM context as the workbench, with a single interface and no PDO mapping or cyclic exchange. A dedicated BRD/AP scan inventories responding ESCs and confirms INIT without requiring valid SII. Ordinary state, register, mailbox and Lua operations are unavailable in this mode; the EEPROM page is disabled in the other modes.
+
+`src/esi/sii_image.*` parses supported ESI descriptions or validates a BIN into an immutable image. `src/ethercat/eeprom_job.*` implements bounded EEPROM commands, status checks, cancellation and ownership restoration. The GUI submits read/write requests through the Controller and displays published progress. Before a write, the worker validates capacity and image structure, rechecks topology and compares the target with its own scanned identity. A different identity in the new image is allowed and shown in the existing operation confirmation.
+
+Writes skip unchanged words and compare the complete readback. Generation and metadata invalidation prevent reuse of old mappings after programming. Cancellation may leave a partial image; no rollback or automatic OP request is performed. Successful readback is reported as activation pending, because device reload, reset, power-cycle or emulation persistence requirements remain device-specific. Read/save and image export are available; automatic backups, independent backup comparison, erase, batch programming, redundant-port programming and Lua EEPROM APIs are not implemented.
+
 ## Current service limits
 
-The application implements scanning, four-state control, mapped PDO access, ESC access, CoE SDO access, bounded SDO Information discovery, ESI dictionary/display metadata and Lua automation. Dictionary descriptions are immutable and shared across snapshots; live and offline dictionaries remain separate, with online metadata taking precedence in the UI. Device values are read explicitly and cached by connection, slave and object address. It does not implement FoE, EoE, SoE, VoE, BOOT workflows, EEPROM backup/comparison, DC SYNC trigger configuration, or per-port failover counters.
+The application implements scanning, four-state control, mapped PDO access, ESC access, CoE SDO access, bounded SDO Information discovery, ESI dictionary/display metadata, EEPROM programming and Lua automation. Dictionary descriptions are immutable and shared across snapshots; live and offline dictionaries remain separate, with online metadata taking precedence in the UI. Device values are read explicitly and cached by connection, slave and object address. It does not implement FoE, EoE, SoE, VoE, BOOT workflows, DC SYNC trigger configuration, or per-port failover counters.
 
 UI capability declarations are kept separate from implemented services. No menu or device flag establishes that a protocol path or redundancy recovery has been validated on hardware.
 
