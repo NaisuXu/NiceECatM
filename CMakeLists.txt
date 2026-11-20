@@ -23,6 +23,7 @@ add_library(niceecatm_core STATIC
   src/script/runtime.cpp
   src/ethercat/simulation.cpp
   src/ethercat/eeprom_job.cpp
+  src/ethercat/foe_job.cpp
   src/ethercat/soem_backend.cpp)
 target_include_directories(niceecatm_core PUBLIC src)
 target_link_libraries(niceecatm_core PUBLIC soem Threads::Threads PRIVATE niceecatm_xml niceecatm_lua)
@@ -72,6 +73,7 @@ if(NICEECATM_BUILD_GUI)
     src/ui/pdo_page.cpp
     src/ui/service_pages.cpp
     src/ui/eeprom_page.cpp
+    src/ui/foe_page.cpp
     src/ui/script_page.cpp
     src/app/desktop.cpp
     resources/fonts/workbench_font.cpp

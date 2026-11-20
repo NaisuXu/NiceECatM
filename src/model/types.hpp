@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace niceecatm {
-enum class AlState : uint16_t { Init=1, PreOp=2, SafeOp=4, Op=8 };
+enum class AlState : uint16_t { Init=1, PreOp=2, Boot=3, SafeOp=4, Op=8 };
 const char* stateName(uint16_t state);
 struct Adapter { std::string name, description; };
 enum class ConnectionMode { Simulation, Hardware, Programming };
@@ -76,6 +76,9 @@ struct Slave {
     std::vector<PdoEntry> pdoEntries;
     std::string pdoIssue, esiFile, esiStatus;
     bool sdoInfo=false;
+    // Valid bootstrap mailbox configuration is metadata, not proof that the
+    // slave firmware implements FoE or accepts a particular file.
+    bool bootstrapMailbox=false;
     // Immutable descriptions are shared by GUI/script snapshots, keeping large
     // dictionaries out of per-cycle deep copies. ESI never overwrites live OD.
     std::shared_ptr<const SdoDictionary> sdoDictionary, esiSdoDictionary;
@@ -108,6 +111,29 @@ struct EepromControl {
     std::function<bool()> cancelled;
     std::function<void(const EepromProgress&)> progress;
 };
+enum class FoeDirection { Upload, Download };
+enum class FoeStage { Idle, Preparing, Sending, Receiving, Busy, Finalizing, Complete, Cancelled, Failed };
+struct FoeOptions {
+    // Paths are UTF-8. Large file contents never enter commands or snapshots.
+    std::string remoteName,localPath;
+    uint32_t password=0;
+    size_t maxBytes=16*1024*1024;
+    int responseTimeoutMs=3000,noProgressTimeoutMs=30000,totalTimeoutMs=300000,retries=3;
+};
+struct FoeProgress {
+    FoeStage stage=FoeStage::Idle;
+    size_t completed=0,total=0,blocks=0;
+    double elapsedSeconds=0,bytesPerSecond=0;
+    uint32_t errorCode=0;
+    std::string detail;
+    uint64_t request=0;
+    int slave=0;
+    FoeDirection direction=FoeDirection::Download;
+};
+struct FoeControl {
+    std::function<bool()> cancelled;
+    std::function<void(const FoeProgress&)> progress;
+};
 struct Snapshot {
     bool simulation=false, connected=false, mapped=false, running=false, busy=false;
     Connection connection;
@@ -123,8 +149,9 @@ struct Snapshot {
     std::vector<LogEntry> logs;
     Result result;
     EepromProgress eeprom;
+    FoeProgress foe;
 };
-enum class CommandKind { RefreshAdapters, SetMode, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, ReadSdoDictionary, WriteOutput, ReadEeprom, WriteEeprom };
+enum class CommandKind { RefreshAdapters, SetMode, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, ReadSdoDictionary, WriteOutput, ReadEeprom, WriteEeprom, FoeUpload, FoeDownload };
 struct Command {
     CommandKind kind=CommandKind::RefreshAdapters;
     uint64_t generation=0;
@@ -135,6 +162,7 @@ struct Command {
     uint8_t subindex=0;
     int length=1, offset=0;
     std::vector<uint8_t> data;
+    FoeOptions foe;
 };
 // Strict byte and bit conversion is shared by the GUI, CLI and simulation.
 bool parseHex(const std::string& text, std::vector<uint8_t>& bytes, std::string& error);

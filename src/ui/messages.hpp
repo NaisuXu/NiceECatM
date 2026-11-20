@@ -10,6 +10,98 @@ namespace niceecatm::detail {
 // Stable tool messages only. Device-returned strings and the SOEM error suffix
 // after " | " are intentionally opaque and never translated by substring.
 inline const std::pair<const char*,const char*> messageTranslations[]={
+    {"Unspecified slave error.","从站未提供具体错误原因。"},
+    {"File not found; check the device filename.","文件不存在或文件名不受支持，请检查从站文件名。"},
+    {"File access denied.","文件访问被拒绝。"},
+    {"Slave storage or memory is full.","从站存储空间或内存已满。"},
+    {"Illegal FoE operation.","从站不支持此 FoE 操作。"},
+    {"Invalid FoE packet number.","FoE 包号无效。"},
+    {"File already exists.","文件已存在。"},
+    {"No user is available.","没有可用用户。"},
+    {"FoE requires BOOT state.","此 FoE 操作要求从站处于 BOOT 状态。"},
+    {"File is not permitted in BOOT; check the device filename.","BOOT 状态下不允许访问此文件，请检查从站文件名。"},
+    {"Invalid password or insufficient rights.","密码错误或权限不足。"},
+    {"Slave programming failed.","从站编程失败。"},
+    {"File checksum is invalid.","文件校验和无效。"},
+    {"Firmware is incompatible with the slave hardware.","固件与从站硬件不兼容。"},
+    {"File header is missing or invalid.","文件头缺失或无效。"},
+    {"Slave flash access failed.","从站 Flash 访问失败。"},
+    {"File format is incompatible.","文件格式不兼容。"},
+    {"Unknown or vendor-specific error; consult the slave documentation.","未知或厂商自定义错误，请查阅从站文档。"},
+    {"FoE is unavailable in Programming mode.","编程模式下不能使用 FoE。"},
+    {"Stop the script before FoE transfer.","FoE 传输前请先停止脚本。"},
+    {"Connect and scan before FoE transfer.","FoE 传输前请先连接并扫描。"},
+    {"Scan and select a slave before FoE transfer.","FoE 传输前请先扫描并选择从站。"},
+    {"Switch all slaves to PRE-OP and stop cyclic I/O before FoE transfer.","FoE 传输前请先将全部从站切换到 PRE-OP，并停止周期 I/O。"},
+    {"Stop cyclic I/O and move all OP slaves to PRE-OP before FoE transfer.","FoE 传输前请先停止周期 I/O，并将所有 OP 从站切换到 PRE-OP。"},
+    {"FoE transfer requires a selected slave with confirmed PRE-OP or BOOT and no AL error.","FoE 传输需要选中的从站已确认处于 PRE-OP 或 BOOT，且没有 AL 错误。"},
+    {"FoE transfer cancelled before access.","FoE 传输已在访问前取消。"},
+    {"Select a connected slave for FoE.","请选择已连接的从站进行 FoE 传输。"},
+    {"Stop cyclic I/O before FoE transfer.","FoE 传输前请先停止周期 I/O。"},
+    {"Move all OP slaves to PRE-OP before FoE transfer.","FoE 传输前请先将所有 OP 从站切换到 PRE-OP。"},
+    {"FoE requires confirmed PRE-OP or BOOT without AL error.","FoE 要求已确认处于 PRE-OP 或 BOOT，且没有 AL 错误。"},
+    {"Slave does not declare FoE support in the normal mailbox.","从站未在普通 Mailbox 中声明支持 FoE。"},
+    {"Establish BOOT through the state toolbar before FoE transfer.","请先使用顶部状态按钮建立 BOOT 会话，再进行 FoE 传输。"},
+    {"FoE mailbox sizes are invalid.","FoE Mailbox 大小无效。"},
+    {"FoE cancelled before mailbox access.","FoE 已在访问 Mailbox 前取消。"},
+    {"Slave mailbox did not become empty before the FoE request.","发送 FoE 请求前，从站 Mailbox 未能清空。"},
+    {"FoE cancelled locally; accepted slave data is not rolled back.","FoE 已在本地取消，已被从站接收的数据不会回滚。"},
+    {"FoE total timeout exceeded.","FoE 已超过总超时时间。"},
+    {"FoE no-progress timeout exceeded.","FoE 已超过无进展超时时间。"},
+    {"FoE mailbox send failed; the last packet may have reached the slave.","FoE Mailbox 发送失败，最后一个包可能已到达从站。"},
+    {"FoE link or mailbox transport is unavailable.","FoE 链路或 Mailbox 传输不可用。"},
+    {"FoE response exceeds the slave mailbox payload capacity.","FoE 响应超过从站 Mailbox 的有效载荷容量。"},
+    {"Slave reports BUSY; waiting within the no-progress deadline.","从站报告 BUSY，正在无进展超时范围内等待。"},
+    {"FoE response timeout; retry limit reached.","FoE 响应超时，已达到重试次数上限。"},
+    {"FoE transfer completed.","FoE 文件传输完成。"},
+    {"FoE transfer failed.","FoE 传输失败。"},
+    {"Select a readable regular file for FoE download.","请选择可读取的普通文件用于 FoE 下载。"},
+    {"FoE download exceeds the 128 MiB file limit or its size cannot be read.","FoE 下载文件超过 128 MiB 上限，或无法读取文件大小。"},
+    {"Cannot open the local FoE download file.","无法打开本地 FoE 下载文件。"},
+    {"Cannot prepare an immutable temporary FoE source file.","无法准备不可变的 FoE 临时源文件。"},
+    {"Cannot prepare the complete FoE source file.","未能完整准备 FoE 源文件。"},
+    {"Preparing immutable FoE source file.","正在准备不可变的 FoE 源文件。"},
+    {"FoE source changed in size during preparation, or temporary source I/O failed.","准备期间 FoE 源文件大小发生变化，或临时源文件读写失败。"},
+    {"Choose a local filename for FoE upload.","请为 FoE 上传选择本地保存文件名。"},
+    {"Cannot open the temporary FoE upload stream.","无法打开 FoE 上传临时文件。"},
+    {"Cannot allocate a temporary FoE upload filename.","无法分配 FoE 上传临时文件名。"},
+    {"Cannot flush the received FoE file to disk.","无法将接收的 FoE 文件刷新到磁盘。"},
+    {"Cannot close the received FoE file.","无法关闭接收的 FoE 文件。"},
+    {"Cannot replace the destination with the completed FoE upload.","无法用完整接收的 FoE 文件替换目标文件。"},
+    {"Expected a FoE ACK without data.","预期收到不带数据的 FoE ACK。"},
+    {"FoE ACK packet number is out of sequence.","FoE ACK 包号顺序错误。"},
+    {"Prepared FoE source has unexpected trailing data.","已准备的 FoE 源文件含有意外的尾部数据。"},
+    {"Cannot read the expected bytes from the prepared FoE source file.","无法从已准备的 FoE 源文件读取预期字节。"},
+    {"Waiting for final FoE ACK.","正在等待最后一个 FoE ACK。"},
+    {"Sending FoE data.","正在发送 FoE 数据。"},
+    {"Expected a FoE DATA response.","预期收到 FoE DATA 响应。"},
+    {"FoE DATA packet number is out of sequence.","FoE DATA 包号顺序错误。"},
+    {"FoE upload exceeds the configured maximum file size.","FoE 上传超过配置的最大文件大小。"},
+    {"Cannot write the received FoE data to the local file.","无法将接收到的 FoE 数据写入本地文件。"},
+    {"Acknowledging the final FoE data block.","正在确认最后一个 FoE 数据块。"},
+    {"Receiving FoE data.","正在接收 FoE 数据。"},
+    {"Preparing FoE transfer.","正在准备 FoE 传输。"},
+    {"FoE requires valid send and receive mailbox payload capacities.","FoE 需要有效的 Mailbox 收发载荷容量。"},
+    {"Device filename is empty, contains a null byte, or exceeds the mailbox payload capacity.","从站文件名为空、含有空字节或超过 Mailbox 有效载荷容量。"},
+    {"Choose a local FoE file.","请选择本地 FoE 文件。"},
+    {"FoE timeouts must be 1..3600000 ms and retry limit 0..20.","FoE 超时须为 1 至 3600000 毫秒，重试次数须为 0 至 20。"},
+    {"FoE upload limit must be 1 byte through 128 MiB.","FoE 上传大小上限须为 1 字节至 128 MiB。"},
+    {"Password must be an unsigned 32-bit decimal or hexadecimal number.","密码必须是无符号 32 位十进制或十六进制整数。"},
+    {"Enter a device filename.","请输入从站文件名。"},
+    {"Choose a local file or destination before starting.","开始前请选择本地文件或保存位置。"},
+    {"FoE timeouts must be 1..3600 seconds and retries must be 0..20.","FoE 超时须为 1 至 3600 秒，重试次数须为 0 至 20。"},
+    {"Cannot read the selected local file.","无法读取所选本地文件。"},
+    {"FoE files must not exceed 128 MiB.","FoE 文件不能超过 128 MiB。"},
+    {"The selected simulated slave does not support FoE.","所选模拟从站不支持 FoE。"},
+    {"FoE transfer requires confirmed PRE-OP or BOOT.","FoE 传输要求已确认处于 PRE-OP 或 BOOT。"},
+    {"Stop the script before entering BOOT.","进入 BOOT 前请先停止脚本。"},
+    {"Stop all OP slaves before entering BOOT.","进入 BOOT 前请先停止所有 OP 从站。"},
+    {"Stop cyclic I/O by switching all slaves to PRE-OP before BOOT.","进入 BOOT 前请先将全部从站切换到 PRE-OP，以停止周期 I/O。"},
+    {"BOOT requires stopped cyclic I/O, no OP slaves, and no AL errors.","进入 BOOT 要求周期 I/O 已停止、没有 OP 从站且没有 AL 错误。"},
+    {"SII does not provide valid, separate Bootstrap SM0/SM1 mailboxes.","SII 未提供有效且互不重叠的 Bootstrap SM0/SM1 Mailbox。"},
+    {"BOOT confirmed individually; Bootstrap Mailbox configured. Scan again before restarting cyclic I/O.","已逐站确认 BOOT 并配置 Bootstrap Mailbox。重新启动周期 I/O 前请先重新扫描。"},
+    {"AL Control requires BOOT, INIT, PRE-OP, SAFE-OP or OP.","AL Control 需要 BOOT、INIT、PRE-OP、SAFE-OP 或 OP。"},
+    {"Use a regular BOOT/INIT/PRE-OP/SAFE-OP/OP value for AL Control","AL Control 请使用 BOOT、INIT、PRE-OP、SAFE-OP 或 OP 的普通状态值。"},
     {"Ready","就绪"}, {"Disconnected","已断开"}, {"Scanning","正在扫描"},
     {"Disconnect before changing operating mode.","请先断开连接再切换运行模式。"},
     {"Stop the script before changing operating mode.","请先停止脚本再切换运行模式。"},
@@ -273,11 +365,30 @@ inline std::string withoutPeriod(std::string value) {
 }
 inline std::string translateToolMessage(const std::string& message) {
     const auto separator=message.find(" | ");
-    if(separator!=std::string::npos)return translateToolMessage(message.substr(0,separator))+message.substr(separator);
+    if(separator!=std::string::npos) {
+        const std::string slaveMessage=" | Slave message: ";
+        return translateToolMessage(message.substr(0,separator))+
+            (message.compare(separator,slaveMessage.size(),slaveMessage)==0?
+             " | 从站信息："+message.substr(separator+slaveMessage.size()):message.substr(separator));
+    }
     if(message.rfind("EEPROM: ",0)==0)return "EEPROM："+translateToolMessage(message.substr(8));
+    if(message.rfind("FoE: ",0)==0)return "FoE："+translateToolMessage(message.substr(5));
     const auto plain=withoutPeriod(message);
     static const auto exact=[](){std::unordered_map<std::string,std::string> result;for(const auto& entry:messageTranslations)result[withoutPeriod(entry.first)]=entry.second;return result;}();
     if(const auto entry=exact.find(plain);entry!=exact.end())return entry->second;
+    if(message.rfind("FoE error ",0)==0) {
+        const auto reason=message.find(": ",10);
+        return "FoE 错误 "+(reason==std::string::npos?message.substr(10):
+            message.substr(10,reason-10)+"："+translateToolMessage(message.substr(reason+2)));
+    }
+    const std::string bootPreflight="BOOT preflight failed for slave ";
+    if(message.rfind(bootPreflight,0)==0) {
+        const auto split=message.find(": ",bootPreflight.size());
+        if(split!=std::string::npos)return "BOOT 预检查失败，从站 "+message.substr(bootPreflight.size(),split-bootPreflight.size())+"："+translateToolMessage(message.substr(split+2));
+    }
+    const std::string missingBootstrap=" has no valid bootstrap mailbox; BOOT was not requested.";
+    if(message.rfind("Slave ",0)==0&&message.size()>missingBootstrap.size()&&message.compare(message.size()-missingBootstrap.size(),missingBootstrap.size(),missingBootstrap)==0)
+        return "从站 "+message.substr(6,message.size()-missingBootstrap.size()-6)+" 没有有效的 Bootstrap Mailbox，未执行 BOOT 切换。";
     for(const auto* prefix:{"Online SDO dictionary complete: ","Online SDO dictionary incomplete: "}) {
         const std::string start=prefix;if(message.rfind(start,0)!=0)continue;
         const auto objectsEnd=message.find(" objects, ",start.size());
@@ -323,6 +434,11 @@ inline std::string translateToolMessage(const std::string& message) {
         }
     }
     const std::pair<const char*,const char*> prefixes[]={
+        {"Cannot replace the destination with the completed FoE upload: ","无法用完整接收的 FoE 文件替换目标文件："},
+        {"BOOT configuration/state was not confirmed for slave ","未能确认 BOOT 配置或状态，从站 "},
+        {"BOOT preflight could not confirm a live AL state for slave ","BOOT 预检查未能确认实际 AL 状态，从站 "},
+        {"FoE cannot confirm a live AL state for slave ","FoE 未能确认实际 AL 状态，从站 "},
+        {"Could not restore normal mailbox through INIT for slave ","未能经过 INIT 恢复普通 Mailbox，从站 "},
         {"EEPROM command rejected ","EEPROM 命令被拒绝 "},
         {"EEPROM command/write error ","EEPROM 命令或写入错误 "},
         {"EEPROM image prepared: ","EEPROM 镜像已准备："},

@@ -37,6 +37,7 @@ void print(niceecatm::Snapshot s,const niceecatm::Result& r) {
     for(const auto& d:s.slaves){if(!first)std::cout<<',';first=false;
       std::cout<<"\n    {\"position\": "<<d.position<<", \"name\": "<<quote(d.name)<<", \"vendor\": "<<d.vendor<<", \"product\": "<<d.product<<", \"revision\": "<<d.revision<<", \"serial\": "<<d.serial
       <<", \"state\": "<<quote(niceecatm::stateName(d.state))<<", \"stateRaw\": "<<d.state<<", \"alCode\": "<<d.alCode<<", \"inputBits\": "<<d.inputBits<<", \"outputBits\": "<<d.outputBits<<", \"inputOffset\": "<<d.inputOffset<<", \"outputOffset\": "<<d.outputOffset<<", \"dc\": "<<(d.dc?"true":"false")<<", \"mailboxProtocols\": "<<d.mailboxProtocols
+      <<", \"bootstrapMailbox\": "<<(d.bootstrapMailbox?"true":"false")
       <<", \"eepromIdentityKnown\": "<<(d.eepromIdentityKnown?"true":"false")<<", \"eepromSizeKnown\": "<<(d.eepromSizeKnown?"true":"false")<<", \"eepromCapacity\": "<<d.eepromCapacity
       <<", \"inputLayoutKnown\": "<<(d.inputLayoutKnown?"true":"false")<<", \"outputLayoutKnown\": "<<(d.outputLayoutKnown?"true":"false")
       <<", \"pdoIssue\": "<<quote(d.pdoIssue)<<", \"esiFile\": "<<quote(d.esiFile)<<", \"esiStatus\": "<<quote(d.esiStatus)<<", \"pdoEntries\": [";
@@ -77,7 +78,7 @@ int runCli(int argc,char**argv) {
         <<"Options: --simulate, --secondary NAME (same-bus redundancy), --overlap\n"
         <<"         --cycle-us 500|1000|2000|5000|10000|20000|50000|100000\n"
         <<"GUI smoke capture: --ui-smoke --frames 30 --screenshot PATH.bmp\n"
-        <<"GUI startup: --language en|zh-CN --tab device|registers|pdo|mailbox|sdo|diagnostics|scripts|eeprom\n"
+        <<"GUI startup: --language en|zh-CN --tab device|registers|pdo|sdo|foe|scripts|eeprom|diagnostics\n"
         <<"             --esi-image PATH.xml|PATH.bin  Open image in Programming mode (no scan)\n"
         <<"Scan configures EtherCAT slaves and mapping; no output values are written by CLI.\n";return 0;
       } else if(a=="--adapters")adapters=true;
@@ -143,10 +144,11 @@ int runCli(int argc,char**argv) {
     if(r.ok&&operation=="state"){
       niceecatm::AlState requested;
       if(state=="INIT")requested=niceecatm::AlState::Init;
+      else if(state=="BOOT")requested=niceecatm::AlState::Boot;
       else if(state=="PRE-OP")requested=niceecatm::AlState::PreOp;
       else if(state=="SAFE-OP")requested=niceecatm::AlState::SafeOp;
       else if(state=="OP")requested=niceecatm::AlState::Op;
-      else throw std::runtime_error("State must be INIT, PRE-OP, SAFE-OP or OP");
+      else throw std::runtime_error("State must be BOOT, INIT, PRE-OP, SAFE-OP or OP");
       r=backend->state(slave,requested);
     }
     print(backend->snapshot(),r);backend->close();return r.ok?0:1;

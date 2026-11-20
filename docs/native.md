@@ -86,13 +86,14 @@ Scanning is an active SOEM configuration and mapping operation. It leaves respon
 
 | Action | Result |
 | --- | --- |
+| BOOT | With cyclic I/O and scripts stopped, validates the target scope and enters BOOT through INIT using bootstrap mailboxes; invalidates PDO mapping |
 | INIT | Requests INIT and stops cyclic exchange |
 | PRE-OP | Requests PRE-OP and stops cyclic exchange |
 | SAFE-OP | Requests SAFE-OP and starts cyclic exchange; slave outputs remain in their safe state |
 | OP | Requests OP and starts cyclic exchange; valid output PDOs may be applied by the slave |
 | Disconnect | Stops exchange and closes the master connection |
 
-A state request can fail; check actual AL state and the Log rather than assuming the request succeeded. The target selector applies a request to all slaves or the topology selection. The actual slave state includes AL error flags.
+A state request can fail; check actual AL state and the Log rather than assuming the request succeeded. The top controls are **BOOT / INIT / PRE-OP / SAFE-OP / OP**. The target selector applies a request to all slaves or the topology selection. BOOT validates every target before changing state and confirms each target individually. Exiting BOOT restores normal mailboxes through INIT; scan again before restarting cyclic I/O. The actual slave state includes AL error flags.
 
 The target cycle can be changed while exchange is stopped and all slaves are in INIT/PRE-OP. Available values are 500 us, 1, 2, 5, 10, 20, 50 and 100 ms; the default is 10 ms. Timing is measured on the host and is subject to operating-system and driver scheduling.
 
@@ -102,17 +103,27 @@ Background AL-state monitoring distinguishes an unreadable `NONE` result from a 
 
 ## Workbench pages
 
-- **BufferPDO:** signals for the selected slave, direct output editing and a 20-second trend window. Input fields are read-only. Cached/stopped data retains its previous trend.
-- **ESC registers:** physical ESC offset and byte data. Writes are limited by the implemented register rules and current state.
-- **CoE / SDO:** searchable object dictionary with always-visible subindices, descriptions, data types, bit lengths, access flags, source and explicitly read values. Group headers use a tinted background; their entries are indented, with no collapse controls. Matching ESI descriptions are available without mailbox requests. Entering this page in confirmed PRE-OP discovers online descriptions once when SDO Information is declared and no script is running; Refresh dictionary retries explicitly. Online metadata takes priority and ESI supplements missing descriptions. Discovery is bounded, may be partial, and never reads all values or changes AL state. Manual Index/SubIndex access remains available. Unknown encodings use raw bytes.
-- **Mailbox:** device protocol declarations and current service availability. A declaration does not mean a protocol service is implemented.
 - **Device / DC:** device identity, mapped layout information and declared capabilities. DC trigger configuration/readback is not connected.
-- **Diagnostics:** WKC, host timing, bus context and a 200-sample deviation history.
+- **ESC registers:** physical ESC offset and byte data. Writes are limited by the implemented register rules and current state.
+- **BufferPDO:** signals for the selected slave, direct output editing and a 20-second trend window. Input fields are read-only. Cached/stopped data retains its previous trend.
+- **CoE / SDO:** searchable object dictionary with always-visible subindices, descriptions, data types, bit lengths, access flags, source and explicitly read values. Group headers use a tinted background; their entries are indented, with no collapse controls. Matching ESI descriptions are available without mailbox requests. Entering this page in confirmed PRE-OP discovers online descriptions once when SDO Information is declared and no script is running; Refresh dictionary retries explicitly. Online metadata takes priority and ESI supplements missing descriptions. Discovery is bounded, may be partial, and never reads all values or changes AL state. Manual Index/SubIndex access remains available. Unknown encodings use raw bytes.
+- **FoE:** selected-target file upload/download in confirmed PRE-OP or BOOT, with progress, cancellation and bounded timeouts/retries.
 - **Scripts:** Lua editor, saved files, API snippets and automation. See the [script guide](scripts.md).
 - **EEPROM:** Programming-only image preparation/export, EEPROM read/save and selected-target programming with complete readback comparison.
+- **Diagnostics:** WKC, host timing, bus context and a 200-sample deviation history; its tab follows EEPROM.
 - **Log:** shared application and script messages with Follow and Clear controls. Select one entry and press Ctrl+C to copy its complete displayed line.
 
+FoE follows CoE / SDO, and Diagnostics follows EEPROM. Programming selects EEPROM and disables every other page; EEPROM is disabled in Hardware/Simulation.
+
 Writes do not require a global unlock. State, direction, size, mapping and object permissions are always enforced. In PRE-OP/SAFE-OP an output-image write prepares the master image; it does not establish physical output activation. Synchronous register and SDO operations require cyclic exchange to be stopped.
+
+## FoE file transfer
+
+In Hardware/Simulation, stop scripts and move all slaves to PRE-OP before transferring. Select the target, upload/download direction, vendor-defined device filename and 32-bit password, then the local file or save destination. Use the shared BOOT control only if the device's procedure requires it. Files are limited to 128 MiB; uploads default to a 16 MiB receive limit. Defaults are 3 s response, 30 s no-progress, 300 s total timeout and 3 retries. The page shows progress and cancellation; details use the global Log, and passwords are not saved or logged.
+
+For slave-reported errors, the page and global Log show the protocol code, a localized standard reason and any original slave text; generic or vendor-specific errors cannot reliably distinguish an unsupported filename from an incorrect password.
+
+**FoE completion confirms file transfer; whether firmware is activated is determined by the slave.** Cancellation cannot undo accepted slave data; failed/cancelled uploads preserve the original local destination. EEPROM support does not establish FoE support. See the [release workflow](../resources/release/README.md#foe-file-transfer) for steps and the [architecture](design.md#foe-transfer-and-boot-sessions) for protocol boundaries. Lua/CLI file-transfer APIs are not implemented.
 
 ## EEPROM programming
 

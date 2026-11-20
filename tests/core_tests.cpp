@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "ethercat/backend.hpp"
+#include "ui/messages.hpp"
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -14,6 +15,15 @@ void check(bool value,const char* message) {++checks;if(!value)throw std::runtim
 }
 int main() {
     try {
+        using detail::translateToolMessage;
+        check(translateToolMessage("FoE error 0x0000800A: Invalid password or insufficient rights.")==
+              "FoE 错误 0x0000800A：密码错误或权限不足。","FoE password error is translated with its original code");
+        check(translateToolMessage("FoE error 0x00008001: File not found; check the device filename.")==
+              "FoE 错误 0x00008001：文件不存在或文件名不受支持，请检查从站文件名。","FoE filename error has an actionable translated reason");
+        check(translateToolMessage("FoE error 0x0000800A: Invalid password or insufficient rights. | Slave message: File already exists. | app.bin")==
+              "FoE 错误 0x0000800A：密码错误或权限不足。 | 从站信息：File already exists. | app.bin","FoE slave text stays opaque after the translated reason");
+        check(translateToolMessage("FoE error 0x12345678: Unknown or vendor-specific error; consult the slave documentation.")==
+              "FoE 错误 0x12345678：未知或厂商自定义错误，请查阅从站文档。","FoE vendor error is not guessed");
         std::vector<uint8_t> bytes;std::string error;
         check(parseHex("0x01, FF 0A10",bytes,error)&&bytes==std::vector<uint8_t>({1,255,10,16}),"HEX parser supports byte groups");
         const auto original=bytes;

@@ -139,6 +139,7 @@ SignalInfo Bridge::readSignal(int slavePosition,const std::string& name) const {
     const auto snapshot=controller_.snapshot();
     const auto* slave=findSlave(snapshot,slavePosition);
     if(!slave) {info.error="Signal target slave is not connected.";return info;}
+    if((slave->state&15)==3){info.error="PDO signals are unavailable in BOOT.";return info;}
     bool ambiguous=false;
     const auto* entry=findSignal(*slave,name,ambiguous);
     if(!entry) {
@@ -161,6 +162,7 @@ SignalInfo Bridge::readSignal(int slavePosition,uint16_t index,uint8_t subindex)
     SignalInfo info;info.slave=slavePosition;info.bitLength=0;
     const auto snapshot=controller_.snapshot();const auto* slave=findSlave(snapshot,slavePosition);
     if(!slave){info.error="Signal target slave is not connected.";return info;}
+    if((slave->state&15)==3){info.error="PDO signals are unavailable in BOOT.";return info;}
     bool ambiguous=false;const auto* entry=findSignal(*slave,index,subindex,ambiguous);
     if(!entry){info.error=ambiguous?"PDO index/subindex is ambiguous.":"PDO index/subindex was not found.";return info;}
     info.name=pdoEntryName(*entry,false);info.input=entry->input;info.bitOffset=entry->bitOffset;info.bitLength=entry->bitLength;info.type=entry->type;info.source=entry->source;
@@ -184,9 +186,8 @@ uint64_t Bridge::writeSignal(int slavePosition,const std::string& name,const std
     if(entry->padding||entry->type.empty()||entry->bitLength==0||entry->bitLength>64)
         return fail("Signal does not have a supported writable type.");
     const auto state=slave->state&0x0f;
-    if(!snapshot.connected||!snapshot.mapped||state<static_cast<int>(AlState::PreOp))
+    if(!snapshot.connected||!snapshot.mapped||(state!=2&&state!=4&&state!=8))
         return fail(signalStateError(snapshot,*slave,"Signal write requires a mapped PRE-OP, SAFE-OP or OP slave."));
-    if(state>static_cast<int>(AlState::Op))return fail(signalStateError(snapshot,*slave,"Signal target slave has an invalid AL state."));
     std::vector<uint8_t> encoded;std::string conversion;
     if(!encodeValue(value,entry->type,hex,encoded,conversion))return fail(conversion);
     auto candidate=slave->outputs;
@@ -208,9 +209,8 @@ uint64_t Bridge::writeSignal(int slavePosition,uint16_t index,uint8_t subindex,c
     if(entry->input)return fail("Input signals are read only.");
     if(entry->type.empty()||entry->bitLength==0||entry->bitLength>64)return fail("Signal does not have a supported writable type.");
     const auto state=slave->state&0x0f;
-    if(!snapshot.connected||!snapshot.mapped||state<static_cast<int>(AlState::PreOp))
+    if(!snapshot.connected||!snapshot.mapped||(state!=2&&state!=4&&state!=8))
         return fail(signalStateError(snapshot,*slave,"Signal write requires a mapped PRE-OP, SAFE-OP or OP slave."));
-    if(state>static_cast<int>(AlState::Op))return fail(signalStateError(snapshot,*slave,"Signal target slave has an invalid AL state."));
     std::vector<uint8_t> encoded;std::string conversion;
     if(!encodeValue(value,entry->type,hex,encoded,conversion))return fail(conversion);
     auto candidate=slave->outputs;

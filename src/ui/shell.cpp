@@ -38,7 +38,7 @@ void sourceChanged(Controller& c,const Snapshot& s,ConnectionMode mode) {
         if(ui.activeTab=="eeprom")ui.activeTab="pdo";
         if(ui.requestedTab=="eeprom")ui.requestedTab.clear();
     }
-    if(mode==ConnectionMode::Programming){ui.config.redundant=false;ui.config.overlap=false;}
+    if(mode==ConnectionMode::Programming){ui.config.redundant=false;ui.config.overlap=false;ui.activeTab="eeprom";ui.requestedTab="eeprom";}
     Command request;request.kind=CommandKind::SetMode;request.connection=ui.config;request.generation=s.generation;
     const uint64_t id=c.submit(std::move(request));
     if(!id){ui.config=previous;ui.localError="Command queue is full.";return;}
@@ -234,7 +234,7 @@ void sidebar(Controller& c,const Snapshot& s) {
     float previousY=allPos.y+35;
     for(const auto& slave:s.slaves) {
         ImGui::PushID(slave.position);const ImVec2 row=ImGui::GetCursorScreenPos();ImGui::SetCursorScreenPos({row.x+26,row.y});
-        ImGui::BeginDisabled(programming&&blocked(s));
+        ImGui::BeginDisabled((programming&&blocked(s))||foeRunning());
         if(ImGui::Selectable("##device",ui.selected==slave.position,ImGuiSelectableFlags_None,{std::max(1.f,ImGui::GetContentRegionAvail().x),51}))ui.selected=slave.position;
         ImGui::EndDisabled();
         if(ImGui::IsItemHovered())ImGui::SetTooltip("%d · %s\n%s\n%s: %s (%s)\n%s: %s",slave.position,slave.name.c_str(),deviceDescription(slave,s).c_str(),tr("Actual AL","实际 AL"),stateLabel(slave.state).c_str(),hexNumber(slave.state,4).c_str(),tr("AL status code","AL 状态码"),hexNumber(slave.alCode,4).c_str());
@@ -273,28 +273,30 @@ void stateToolbar(Controller& c,const Snapshot& s) {
 
     // Cycle, target scope and AL-state buttons stay interactive in the same row.
     const float phaseWidth=font(fonts.regular)->CalcTextSizeA(12,10000,0,phase.c_str()).x;
-    float x=std::max(140.f,42.f+phaseWidth+16.f);
+    const bool compact=width<940.f;
+    float x=std::max(compact?126.f:140.f,42.f+phaseWidth+16.f);
     const float rowY=15.f;
     ImGui::PushFont(font(fonts.small),11);ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{5,9});
     const bool cycleEditable=!s.connected||(!s.running&&std::all_of(s.slaves.begin(),s.slaves.end(),[](const Slave& slave){const auto state=slave.state&0xf;return state==1||state==2;}));
     const bool programming=ui.config.mode==ConnectionMode::Programming;
-    ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(80);ImGui::BeginDisabled(programming||blocked(s)||!cycleEditable);
+    ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(compact?72.f:80.f);ImGui::BeginDisabled(programming||blocked(s)||!cycleEditable);
     const int cycles[]={500,1000,2000,5000,10000,20000,50000,100000};const char* names[]={"500 μs","1 ms","2 ms","5 ms","10 ms","20 ms","50 ms","100 ms"};
     int cycle=4;for(int i=0;i<8;++i)if(ui.config.cycleUs==cycles[i])cycle=i;
     if(ImGui::Combo("##cycle",&cycle,names,8)){ui.config.cycleUs=cycles[cycle];if(s.connected){Command cmd;cmd.kind=CommandKind::SetCycle;cmd.connection.cycleUs=ui.config.cycleUs;send(c,s,std::move(cmd));}}
     ImGui::EndDisabled();tooltip("Target cycle. Change while disconnected or all slaves are INIT/PRE-OP.","断开连接或所有从站处于 INIT/PRE-OP 时可修改。");
-    x+=88;ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(86);
+    x+=compact?80.f:88.f;ImGui::SetCursorPos({x,rowY});ImGui::SetNextItemWidth(compact?82.f:86.f);
     const char* scopes[]={tr("All slaves","全部从站"),tr("Selected","当前从站")};int scope=ui.allStates?0:1;
-    ImGui::BeginDisabled(programming);if(ImGui::Combo("##state-scope",&scope,scopes,2))ui.allStates=scope==0;ImGui::EndDisabled();
-    tooltip("AL-state request target. Cyclic I/O always exchanges the whole bus.","AL 状态请求目标。周期 I/O 始终交换整条总线。");x+=94;
+    ImGui::BeginDisabled(programming||blocked(s));if(ImGui::Combo("##state-scope",&scope,scopes,2))ui.allStates=scope==0;ImGui::EndDisabled();
+    tooltip("AL-state request target. Cyclic I/O always exchanges the whole bus.","AL 状态请求目标。周期 I/O 始终交换整条总线。");x+=compact?90.f:94.f;
     ImGui::BeginDisabled(programming||!s.connected||blocked(s));
-    const AlState states[]={AlState::Init,AlState::PreOp,AlState::SafeOp,AlState::Op};
-    const float stateWidths[]={48,66,72,44};
-    for(int i=0;i<4;++i) {
+    const AlState states[]={AlState::Boot,AlState::Init,AlState::PreOp,AlState::SafeOp,AlState::Op};
+    const float stateWidths[]={compact?44.f:52.f,compact?40.f:48.f,compact?57.f:66.f,compact?65.f:72.f,compact?36.f:44.f};
+    for(int i=0;i<5;++i) {
         ImGui::SetCursorPos({x,rowY});const auto state=states[i];const auto raw=static_cast<uint16_t>(state);
         if(tintButton(stateName(raw),{stateWidths[i],28},actual==raw,stateColor(raw))) {
             Command cmd;cmd.kind=CommandKind::State;cmd.slave=ui.allStates?0:ui.selected;cmd.state=state;send(c,s,std::move(cmd));
         }
+        if(state==AlState::Boot)tooltip("Enter BOOT through INIT using the slave's bootstrap mailbox. FoE file transfer is available in BOOT.","通过 INIT 配置从站的 Bootstrap Mailbox 后进入 BOOT，可用于 FoE 文件传输。");
         x+=stateWidths[i]+3;
     }
     ImGui::EndDisabled();ImGui::PopStyleVar();ImGui::PopFont();
@@ -302,7 +304,7 @@ void stateToolbar(Controller& c,const Snapshot& s) {
     // Four compact metric cells share the remaining width. Details such as
     // target cycle and missed deadlines are available through the controls and
     // diagnostics page, while the live values remain visible at a glance.
-    const float metricsStart=x+10;const float column=std::max(58.f,(width-metricsStart-8)/4.f);
+    const float metricsStart=x+10;const float column=std::max(1.f,(width-metricsStart-8)/4.f);
     char wkc[40],actualCycle[48],jitter[48],errors[40];
     if(s.running)std::snprintf(wkc,sizeof(wkc),"%d / %d",s.wkc,s.expectedWkc);else std::snprintf(wkc,sizeof(wkc),"- / %d",s.expectedWkc);
     if(s.cycles)std::snprintf(actualCycle,sizeof(actualCycle),"%.0f",s.actualCycleUs);else std::snprintf(actualCycle,sizeof(actualCycle),"-");
@@ -316,7 +318,12 @@ void stateToolbar(Controller& c,const Snapshot& s) {
         draw->PushClipRect({origin.x+cellLeft+1,origin.y+1},{origin.x+metricsStart+column*(i+1)-1,origin.y+55},true);
         textAt(left,11,titles[i],muted,fonts.small,width<940?7.f:8.f);
         const ImVec4 color=i==0?(s.running?(s.wkc==s.expectedWkc?green:red):teal):i==3&&s.errors?red:ink;
-        const float unitWidth=(i==1||i==2)?15.f:0.f;rightText(right-unitWidth,27,values[i],color,fonts.value,width<940?16.f:18.f);
+        const float unitWidth=(i==1||i==2)?15.f:0.f;
+        const float preferredSize=compact?16.f:18.f;
+        const float measured=font(fonts.value)->CalcTextSizeA(preferredSize,10000.f,0,values[i]).x;
+        const float available=std::max(1.f,right-unitWidth-left);
+        const float valueSize=measured>available?std::max(10.f,preferredSize*available/measured):preferredSize;
+        rightText(right-unitWidth,27+(preferredSize-valueSize)*.5f,values[i],color,fonts.value,valueSize);
         if(unitWidth)textAt(right-13,33,"μs",muted,fonts.small,8);
         draw->PopClipRect();
     }

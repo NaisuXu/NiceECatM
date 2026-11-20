@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-NiceECatM is a graphical EtherCAT tool for scanning slaves, controlling states, testing PDO signals, accessing ESC registers and CoE SDO objects, and running Lua scripts.
+NiceECatM is a graphical EtherCAT tool for scanning slaves, controlling states, testing PDO signals, accessing ESC registers and CoE SDO objects, transferring FoE files, programming EEPROM and running Lua scripts.
 
 Project: [NiceECatM on GitHub](https://github.com/NaisuXu/NiceECatM)
 
@@ -40,10 +40,24 @@ The target cycle defaults to **10 ms**; options are **500 us, 1, 2, 5, 10, 20, 5
 
 For signal descriptions, put matching manufacturer ESI XML files in `esi/`, restart and scan again. English-only device names remain English in the Chinese UI.
 
+## FoE file transfer
+
+1. In **Hardware**, scan and select the target in the left topology. Stop scripts and request **PRE-OP** for all slaves to stop cyclic I/O. **FoE** uses this selection.
+2. For ordinary FoE, stay in PRE-OP. If the device's update procedure requires BOOT, select the intended current/all-slave scope in the top toolbar and click **BOOT**. Every target must have valid bootstrap mailboxes; an unsupported target rejects the initial request without changing any state. BOOT entry passes through INIT. Programming mode is reserved for EEPROM.
+3. Choose **Download · master → slave** or **Upload · slave → master**, enter the vendor's device filename and 32-bit password (decimal or `0x`), then select the local file or save destination. The device filename is independent of the local filename.
+4. Click **Start download/upload**. Progress and errors appear on the page and in the shared Log. Uploads have no known total length; the size limit is a receive bound. Advanced settings control response/no-progress/total timeouts and retries. Passwords are not saved or logged.
+5. Completion leaves the bus in its actual state. After BOOT, use INIT/PRE-OP and **Scan devices** again before cyclic I/O. Follow the vendor's firmware activation or power-cycle procedure; OP is never restored automatically.
+
+For slave-reported errors, the page and global Log show the protocol code, a localized standard reason and any original slave text; generic or vendor-specific errors cannot reliably distinguish an unsupported filename from an incorrect password.
+
+**FoE completion confirms file transfer; whether firmware is activated is determined by the slave.** Cancellation does not roll back data already accepted by the slave. A failed/cancelled upload preserves an existing local destination. EEPROM support does not imply FoE support; the slave's application/bootloader must implement it.
+
+In **Simulation**, virtual slave 4 provides `firmware.bin` and `demo.bin`; downloads can be uploaded again for readback testing. No hardware is accessed. FoE transfer is currently a GUI feature; Lua snippets do not expose file-transfer APIs.
+
 ## EEPROM programming
 
 1. Stop scripts, disconnect, choose **Programming** on the left, select one interface and **Scan**. This scan confirms **INIT** without PDO mapping and can enumerate blank SII devices. Select the physical target in the left topology.
-2. The **EEPROM** page is enabled only in **Programming**. Use **Open ESI** and choose its device description, or **Open BIN**. Preparation and BIN export work before connecting. ESI generation supports the supplied AX58100/LAN9252 fixed-device features; unsupported layouts are rejected. A display-compatible ESI is not necessarily supported for image generation.
+2. Only the **EEPROM** page can be selected in **Programming**; all other pages are disabled. Use **Open ESI** and choose its device description, or **Open BIN**. Preparation and BIN export work before connecting. ESI generation supports the supplied AX58100/LAN9252 fixed-device features; unsupported layouts are rejected. A display-compatible ESI is not necessarily supported for image generation.
 3. **Read & save** reads the selected EEPROM. If its size is unknown, enter a bounded length suitable for the hardware.
 4. **Program EEPROM** asks you to confirm the target, image and capacity, then writes the prepared image, including Alias/Serial and its padding, and compares the full readback. Different Vendor IDs or Product Codes are allowed and shown in this confirmation; matching identifiers alone do not prove hardware compatibility. The displayed SII capacity is a declaration, not a physical measurement.
 

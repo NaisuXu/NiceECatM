@@ -11,6 +11,8 @@
 #endif
 #include "ethercat/backend.hpp"
 #include "ethercat/eeprom_job.hpp"
+#include "ethercat/foe_job.hpp"
+#include "ethercat/bootstrap_session.hpp"
 #include "ethercat/pdo_layout.hpp"
 #include "platform/pcap_runtime.h"
 #include <algorithm>
@@ -20,6 +22,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <cerrno>
@@ -138,6 +141,106 @@ class SoemBackend final: public Backend {
     std::vector<uint16_t> requested_;
     CyclicStatePoll stateMonitor_;
     std::vector<Result> diagnostics_;
+    struct MailboxConfig {
+        uint16_t txOffset=0,txLength=0,rxOffset=0,rxLength=0;
+        ec_smt sm0{},sm1{};
+    };
+    std::set<int> bootstrapSlaves_;
+    std::map<int,foe::BootstrapSession<MailboxConfig>> mailboxSessions_;
+
+    bool readActualState(int slave) {
+        auto& native=context_->slavelist[slave];ec_alstatust actual{};
+        if(ecx_FPRD(&context_->port,native.configadr,ECT_REG_ALSTAT,sizeof(actual),&actual,RegisterTimeoutUs)!=1) {
+            native.state=0;return false;
+        }
+        native.state=etohs(actual.alstatus);native.ALstatuscode=etohs(actual.alstatuscode);
+        const auto state=native.state&15;
+        return state==1||state==2||state==3||state==4||state==8;
+    }
+    bool applyMailboxState(int slave,uint16_t desired) {
+        auto& native=context_->slavelist[slave];
+        return foe::requestMailboxState({
+            [&](uint16_t value){uint16_t request=htoes(value);return ecx_FPWR(&context_->port,native.configadr,ECT_REG_ALCTL,sizeof(request),&request,RegisterTimeoutUs);},
+            [&](uint16_t& state,uint16_t& code){if(!readActualState(slave))return 0;state=native.state;code=native.ALstatuscode;return 1;},
+            []{return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());},
+            [](unsigned ms){std::this_thread::sleep_for(std::chrono::milliseconds(ms));}
+        },desired,unsigned(StateTimeout.count()));
+    }
+
+    bool readBootstrap(int slave,MailboxConfig& config,std::string& issue) {
+        const auto address=context_->slavelist[slave].configadr;
+        eeprom::Session session({
+            [this,address](uint16_t reg,size_t size,void* data){return ecx_FPRD(&context_->port,address,reg,uint16_t(size),data,RegisterTimeoutUs);},
+            [this,address](uint16_t reg,size_t size,const void* data){return ecx_FPWR(&context_->port,address,reg,uint16_t(size),const_cast<void*>(data),RegisterTimeoutUs);}
+        });
+        std::vector<uint8_t> bytes;
+        const bool read=session.begin(issue)&&session.read(ECT_SII_BOOTRXMBX*2,8,128,bytes,issue);
+        std::string cleanup;const bool restored=session.finish(cleanup);
+        if(!read||!restored) {if(!cleanup.empty())issue+=" "+cleanup;return false;}
+        config.txOffset=littleWord(bytes.data());config.txLength=littleWord(bytes.data()+2);
+        config.rxOffset=littleWord(bytes.data()+4);config.rxLength=littleWord(bytes.data()+6);
+        if(!foe::validBootstrapMailbox(config.txOffset,config.txLength,config.rxOffset,config.rxLength,EC_MAXMBX)) {
+            issue="SII does not provide valid, separate Bootstrap SM0/SM1 mailboxes.";return false;
+        }
+        config.sm0.StartAddr=htoes(config.txOffset);config.sm0.SMlength=htoes(config.txLength);config.sm0.SMflags=htoel(0x00010026);
+        config.sm1.StartAddr=htoes(config.rxOffset);config.sm1.SMlength=htoes(config.rxLength);config.sm1.SMflags=htoel(0x00010022);
+        return true;
+    }
+    MailboxConfig normalMailbox(int slave) const {
+        const auto& native=context_->slavelist[slave];
+        return {native.mbx_wo,native.mbx_l,native.mbx_ro,native.mbx_rl,native.SM[0],native.SM[1]};
+    }
+    bool configureMailbox(int slave,const MailboxConfig& config) {
+        auto& native=context_->slavelist[slave];
+        static_assert(sizeof(ec_smt)==8,"Unexpected SOEM SyncManager layout");
+        foe::MailboxImage image{};std::memcpy(image.data(),&config.sm0,8);std::memcpy(image.data()+8,&config.sm1,8);
+        const uint16_t address=native.configadr;
+        if(!foe::programMailbox({
+            [this,address](uint16_t reg,size_t size,const void* data){return ecx_FPWR(&context_->port,address,reg,uint16_t(size),const_cast<void*>(data),RegisterTimeoutUs);},
+            [this,address](uint16_t reg,size_t size,void* data){return ecx_FPRD(&context_->port,address,reg,uint16_t(size),data,RegisterTimeoutUs);}
+        },image))return false;
+        native.SM[0]=config.sm0;native.SM[1]=config.sm1;
+        native.mbx_wo=config.txOffset;native.mbx_l=config.txLength;native.mbx_ro=config.rxOffset;native.mbx_rl=config.rxLength;
+        native.mbx_cnt=0;native.mbxhandlerstate=0;
+        return true;
+    }
+    bool restoreMailbox(int slave) {
+        const auto found=mailboxSessions_.find(slave);
+        if(found==mailboxSessions_.end())return true;
+        if(!found->second.leave([&](uint16_t state){return applyMailboxState(slave,state);},[&](const MailboxConfig& config){return configureMailbox(slave,config);}))return false;
+        mailboxSessions_.erase(found);return true;
+    }
+
+    Result enterBoot(int target) {
+        if(view_.running)return error("Stop cyclic I/O by switching all slaves to PRE-OP before BOOT.");
+        for(int s=1;s<=context_->slavecount;++s) {
+            if(!readActualState(s)){updateSlaves();return error("BOOT preflight could not confirm a live AL state for slave "+std::to_string(s)+".");}
+            const auto actual=context_->slavelist[s].state;
+            if(actual==EC_STATE_OPERATIONAL||(actual&EC_STATE_ERROR))
+                return error("BOOT requires stopped cyclic I/O, no OP slaves, and no AL errors.");
+        }
+        std::map<int,MailboxConfig> checked;
+        // Read and validate the WHOLE requested scope before changing any AL
+        // state. No BOOT broadcast or bitwise aggregate state confirmation.
+        for(int s=target?target:1;s<=(target?target:context_->slavecount);++s) {
+            MailboxConfig config;std::string issue;
+            if(!readBootstrap(s,config,issue)) {updateSlaves();return error("BOOT preflight failed for slave "+std::to_string(s)+": "+issue);}
+            checked.emplace(s,config);
+        }
+        for(const auto& item:checked)bootstrapSlaves_.insert(item.first);
+        invalidateMapping();view_.running=false;stateMonitor_.reset();
+        for(const auto& [s,config]:checked) {
+            auto& native=context_->slavelist[s];
+            if(native.state==EC_STATE_BOOT&&mailboxSessions_.count(s))continue;
+            requested_[s]=EC_STATE_BOOT;
+            if(!mailboxSessions_[s].enter(normalMailbox(s),config,[&](uint16_t state){return applyMailboxState(s,state);},[&](const MailboxConfig& mailbox){return configureMailbox(s,mailbox);})) {
+                ecx_readstate(context_.get());updateSlaves();
+                return error(errors("BOOT configuration/state was not confirmed for slave "+std::to_string(s)+"; "+stateFailure(s)));
+            }
+        }
+        ecx_readstate(context_.get());updateSlaves();
+        return done("BOOT confirmed individually; Bootstrap Mailbox configured. Scan again before restarting cyclic I/O.");
+    }
 
     eeprom::Wire eepromWire(int slave){
         const uint16_t position=uint16_t(1-slave);
@@ -310,6 +413,7 @@ class SoemBackend final: public Backend {
             slave.revision=native.eep_rev;slave.serial=native.eep_ser;slave.state=native.state;
             slave.requested=size_t(s)<requested_.size()?requested_[s]:native.state;
             slave.alCode=native.ALstatuscode;slave.address=native.configadr;slave.mailboxProtocols=native.mbx_proto;
+            slave.bootstrapMailbox=bootstrapSlaves_.count(s)!=0;
             slave.sdoInfo=(native.CoEdetails&ECT_COEDET_SDOINFO)!=0;
             slave.dc=native.hasdc!=0;slave.inputBits=native.Ibits;slave.outputBits=native.Obits;
             slave.inputStartBit=native.Istartbit;slave.outputStartBit=native.Ostartbit;
@@ -667,6 +771,10 @@ public:
             close();return error(message);
         }
         view_.connected=true;
+        for(int s=1;s<=context_->slavecount;++s) {
+            MailboxConfig config;std::string issue;
+            if(readBootstrap(s,config,issue))bootstrapSlaves_.insert(s);
+        }
         context_->manualstatechange=1; // Mapping must not silently request SAFE-OP.
         context_->overlappedMode=config.overlap?TRUE:FALSE;
         io_.assign(MapCapacity,0);
@@ -805,6 +913,61 @@ public:
     Result writeEeprom(int slave,const std::vector<uint8_t>& image,const EepromControl& control) override {
         return eepromOperation(slave,image.size(),&image,control);
     }
+    Result foeTransfer(int slave,FoeDirection direction,const FoeOptions& options,const FoeControl& control) override {
+        if(view_.connection.mode!=ConnectionMode::Hardware)return error("FoE is unavailable in Programming mode.");
+        if(!validSlave(slave))return error("Select a connected slave for FoE.");
+        if(view_.running)return error("Stop cyclic I/O before FoE transfer.");
+        for(int s=1;s<=context_->slavecount;++s) {
+            if(!readActualState(s)){updateSlaves();return error("FoE cannot confirm a live AL state for slave "+std::to_string(s)+".");}
+            if((context_->slavelist[s].state&15)==EC_STATE_OPERATIONAL)return error("Move all OP slaves to PRE-OP before FoE transfer.");
+        }
+        updateSlaves();
+        auto& native=context_->slavelist[slave];
+        if(native.state!=EC_STATE_PRE_OP&&native.state!=EC_STATE_BOOT)return error("FoE requires confirmed PRE-OP or BOOT without AL error.");
+        if(native.state==EC_STATE_PRE_OP&&!(native.mbx_proto&ECT_MBXPROT_FOE))return error("Slave does not declare FoE support in the normal mailbox.");
+        if(native.state==EC_STATE_BOOT&&!mailboxSessions_.count(slave))return error("Establish BOOT through the state toolbar before FoE transfer.");
+        if(native.mbx_l<=12||native.mbx_l>EC_MAXMBX||native.mbx_rl<=12||native.mbx_rl>EC_MAXMBX)return error("FoE mailbox sizes are invalid.");
+        // A stopped master cannot service SOEM's queued cyclic mailbox path.
+        // Use its synchronous link-layer mailbox transport with short waits.
+        struct HandlerGuard {ec_slavet& slave;int saved;~HandlerGuard(){slave.mbxhandlerstate=saved;}} guard{native,native.mbxhandlerstate};
+        native.mbxhandlerstate=0;
+        bool drained=false;
+        for(unsigned attempt=0;attempt<16;++attempt) {
+            if(control.cancelled&&control.cancelled())return error("FoE cancelled before mailbox access.");
+            ec_mbxbuft* old=nullptr;const int wkc=ecx_mbxreceive(context_.get(),uint16_t(slave),&old,0);
+            if(old)ecx_dropmbx(context_.get(),old);
+            if(wkc<=0){drained=true;break;}
+        }
+        if(!drained)return error("Slave mailbox did not become empty before the FoE request.");
+        foe::Wire wire;wire.txPayload=native.mbx_l-12;wire.rxPayload=native.mbx_rl-12;
+        wire.send=[this,slave](const foe::Packet& packet,int timeoutMs) {
+            auto& target=context_->slavelist[slave];
+            if(packet.data.size()>size_t(target.mbx_l)-12)return false;
+            ec_mbxbuft* message=ecx_getmbx(context_.get());if(!message)return false;
+            ec_clearmbx(message);auto* bytes=reinterpret_cast<uint8_t*>(message);
+            const auto length=uint16_t(6+packet.data.size());bytes[0]=uint8_t(length);bytes[1]=uint8_t(length>>8);
+            const uint8_t counter=ec_nextmbxcnt(target.mbx_cnt);target.mbx_cnt=counter;
+            bytes[5]=uint8_t(ECT_MBXT_FOE|MBX_HDR_SET_CNT(counter));bytes[6]=uint8_t(packet.opcode);
+            for(unsigned i=0;i<4;++i)bytes[8+i]=uint8_t(packet.number>>(i*8));
+            std::copy(packet.data.begin(),packet.data.end(),bytes+12);
+            // ecx_mbxsend takes ownership of message on every path.
+            return ecx_mbxsend(context_.get(),uint16_t(slave),message,timeoutMs*1000)>0;
+        };
+        wire.receive=[this,slave](foe::Packet& packet,int timeoutMs) {
+            ec_mbxbuft* message=nullptr;
+            const int wkc=ecx_mbxreceive(context_.get(),uint16_t(slave),&message,timeoutMs*1000);
+            if(wkc<=0||!message){if(message)ecx_dropmbx(context_.get(),message);return 0;}
+            const auto* bytes=reinterpret_cast<const uint8_t*>(message);
+            const size_t length=littleWord(bytes);
+            if((bytes[5]&15)!=ECT_MBXT_FOE){ecx_dropmbx(context_.get(),message);return 0;}
+            if(length<6||length+6>context_->slavelist[slave].mbx_rl){ecx_dropmbx(context_.get(),message);return -1;}
+            packet.opcode=static_cast<foe::Opcode>(bytes[6]);packet.number=littleDword(bytes+8);
+            packet.data.assign(bytes+12,bytes+6+length);ecx_dropmbx(context_.get(),message);return 1;
+        };
+        FoeControl relay=control;relay.progress=[&](const FoeProgress& progress){view_.foe=progress;if(control.progress)control.progress(progress);};
+        auto result=foe::run(std::move(wire),slave,direction,options,relay);
+        view_.status=result.message;return result;
+    }
     Result setCycle(int cycleUs) override {
         if(view_.connection.mode==ConnectionMode::Programming)return error("Cycle configuration is unavailable in Programming mode.");
         if(!validCycle(cycleUs))return error("Target cycle must be 500, 1000, 2000, 5000, 10000, 20000, 50000 or 100000 us");
@@ -823,7 +986,8 @@ public:
         if(view_.connection.mode==ConnectionMode::Programming)return error("Ordinary state control is unavailable in Programming mode.");
         if(!view_.connected || !context_ || slave<0 || slave>context_->slavecount)return error("No connected slave at the requested position");
         const auto requested=static_cast<uint16_t>(desired);
-        if(requested!=1 && requested!=2 && requested!=4 && requested!=8)return error("Unsupported EtherCAT state request");
+        if(requested!=1 && requested!=2 && requested!=3 && requested!=4 && requested!=8)return error("Unsupported EtherCAT state request");
+        if(requested==3)return enterBoot(slave);
         if(view_.running && (requested==1 || requested==2))return error("Stop cyclic exchange before requesting INIT or PRE-OP");
         if(requested>=4 && !view_.mapped)return error("Mapping is invalid; scan again before requesting SAFE-OP or OP");
         stateMonitor_.reset();statePoll_=Clock::now();
@@ -832,6 +996,12 @@ public:
         // INIT slave to make an illegal jump directly into OP.
         ecx_readstate(context_.get());
         bool ok=true;
+        for(int s=slave?slave:1;s<=(slave?slave:context_->slavecount);++s) {
+            if(mailboxSessions_.count(s)&&!restoreMailbox(s)) {
+                ecx_readstate(context_.get());updateSlaves();
+                return error("Could not restore normal mailbox through INIT for slave "+std::to_string(s)+". "+stateFailure(s));
+            }
+        }
         if(requested>=4) {
             for(int s=slave?slave:1;s<=(slave?slave:context_->slavecount);++s) {
                 auto actual=context_->slavelist[s].state&15;
@@ -889,7 +1059,7 @@ public:
         const size_t end=size_t(offset)+bytes.size();
         if(offset==ECT_REG_ALCTL && bytes.size()==2) {
             const uint16_t value=uint16_t(bytes[0])|(uint16_t(bytes[1])<<8);
-            if(value!=1 && value!=2 && value!=4 && value!=8)return error("Use a regular INIT/PRE-OP/SAFE-OP/OP value for AL Control");
+            if(value!=1 && value!=2 && value!=3 && value!=4 && value!=8)return error("Use a regular BOOT/INIT/PRE-OP/SAFE-OP/OP value for AL Control");
             return state(slave,static_cast<AlState>(value));
         }
         const bool mapping=(offset>=0x0600 && end<=0x0640)||(offset>=0x0800 && end<=0x0840);
@@ -1050,6 +1220,7 @@ public:
 #endif
         }
         initialized_=false;context_.reset();redundant_.reset();io_.clear();requested_.clear();
+        bootstrapSlaves_.clear();mailboxSessions_.clear();
         stateMonitor_.reset();statePoll_={};diagnostics_.clear();
         view_.connected=false;view_.mapped=false;view_.running=false;view_.slaves.clear();view_.wkc=0;view_.expectedWkc=0;invalidSince_={};invalidCycles_=0;
         view_.status="Disconnected";

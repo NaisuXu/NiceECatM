@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "ethercat/backend.hpp"
+#include "ethercat/foe_job.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <utility>
 
@@ -17,6 +19,7 @@ bool validCycle(int cycleUs) {
 class Simulation final : public Backend {
     Snapshot view_;
     std::map<int,std::array<uint8_t,4096>> registers_;
+    std::map<std::string,std::vector<uint8_t>> files_;
     uint16_t gain_=1000;
     Result success(std::string message,std::vector<uint8_t> data={}) {view_.status=message;return {true,std::move(message),std::move(data)};}
     Result failure(std::string message) {view_.status=message;return {false,std::move(message),{}};}
@@ -27,7 +30,13 @@ class Simulation final : public Backend {
     bool serviceAllowed() const {return view_.connected&&!view_.running;}
     bool mailboxAllowed(const Slave& s) const {return (s.state&15)==2||(s.state&15)==4||(s.state&15)==8;}
 public:
-    Simulation() {view_.simulation=true;view_.connection.mode=ConnectionMode::Simulation;view_.driver="Built-in simulator / no hardware access";adapters();}
+    Simulation() {
+        view_.simulation=true;view_.connection.mode=ConnectionMode::Simulation;view_.driver="Built-in simulator / no hardware access";adapters();
+        auto& firmware=files_["firmware.bin"];firmware.resize(4096);
+        for(size_t i=0;i<firmware.size();++i)firmware[i]=uint8_t((i*17+3)&255);
+        const std::string text="NiceECatM simulated FoE file. No hardware was accessed.\n";
+        files_["demo.bin"]={text.begin(),text.end()};
+    }
     Result adapters() override {
         view_.adapters={{"sim-primary","Simulated adapter A"},{"sim-secondary","Simulated adapter B"}};
         return success("Two simulated adapters available.");
@@ -41,7 +50,7 @@ public:
             Slave slave;slave.position=i;slave.name=names[i-1];slave.address=uint16_t(0x1000+i);
             slave.vendor=i==5?0xEC01:2;slave.product=uint32_t(i*1000);slave.revision=1;slave.serial=uint32_t(20261100+i);
             slave.state=slave.requested=2;slave.dc=i>=4;slave.mailboxProtocols=i==4?0x003e:0;
-            slave.sdoInfo=i==4;
+            slave.sdoInfo=i==4;slave.bootstrapMailbox=i==4;
             if(i==2) {slave.inputs={0x2d};slave.inputBits=8;slave.inputOffset=20;}
             if(i==3) {slave.outputs={0};slave.outputBits=8;slave.outputOffset=0;}
             if(i==4) {slave.inputs={0,0x00,0x10,0x00,0x08};slave.inputBits=40;slave.inputOffset=21;}
@@ -99,13 +108,28 @@ public:
     Result state(int position,AlState requested) override {
         if(!view_.connected)return failure("Scan devices first.");
         if(position!=0&&!find(position))return failure("Slave does not exist.");
-        if(requested!=AlState::Init&&requested!=AlState::PreOp&&requested!=AlState::SafeOp&&requested!=AlState::Op)return failure("Unsupported AL state.");
+        if(requested!=AlState::Boot&&requested!=AlState::Init&&requested!=AlState::PreOp&&requested!=AlState::SafeOp&&requested!=AlState::Op)return failure("Unsupported AL state.");
         if((requested==AlState::SafeOp||requested==AlState::Op)&&!view_.mapped)return failure("Mapping is invalid; scan devices again.");
-        if(view_.running&&(requested==AlState::Init||requested==AlState::PreOp))return failure("Stop cyclic exchange before lowering state.");
+        if(view_.running&&(requested==AlState::Boot||requested==AlState::Init||requested==AlState::PreOp))return failure("Stop cyclic exchange before lowering state.");
+        if(requested==AlState::Boot) {
+            // Preflight the complete scope before changing even one target.
+            // The other virtual slaves deliberately have no bootstrap mailbox.
+            for(const auto& slave:view_.slaves) {
+                if((slave.state&15)==8)return failure("Stop all OP slaves before entering BOOT.");
+                if((position==0||slave.position==position)&&slave.position!=4)
+                    return failure("Slave "+std::to_string(slave.position)+" has no valid bootstrap mailbox; BOOT was not requested.");
+            }
+        }
         for(auto& s:view_.slaves)if(position==0||s.position==position) {
+            if(requested==AlState::Boot||(s.state&15)==3) {
+                // Real BOOT entry/exit passes through INIT and changes mailbox
+                // configuration; keep the simulated ESC register view aligned.
+                s.requested=s.state=1;registers_[s.position][0x120]=registers_[s.position][0x130]=1;
+            }
             s.requested=s.state=static_cast<uint16_t>(requested);s.alCode=0;
             registers_[s.position][0x120]=uint8_t(s.requested);registers_[s.position][0x130]=uint8_t(s.state);
         }
+        if(requested==AlState::Boot)view_.mapped=false;
         if(requested==AlState::SafeOp||requested==AlState::Op)view_.running=true;
         return success(std::string("Simulated AL state confirmed: ")+stateName(static_cast<uint16_t>(requested))+".");
     }
@@ -133,7 +157,7 @@ public:
         auto* s=find(position);if(!s)return failure("Slave does not exist.");
         if(offset==0x120&&bytes.size()==2) {
             const uint16_t requested=uint16_t(bytes[0]|unsigned(bytes[1])<<8);
-            if(requested!=1&&requested!=2&&requested!=4&&requested!=8)return failure("AL Control requires INIT, PRE-OP, SAFE-OP or OP.");
+            if(requested!=1&&requested!=2&&requested!=3&&requested!=4&&requested!=8)return failure("AL Control requires BOOT, INIT, PRE-OP, SAFE-OP or OP.");
             return state(position,static_cast<AlState>(requested));
         }
         if(bytes.empty()||bytes.size()>256||offset<0x800||size_t(offset)+bytes.size()>0x900)return failure("Writable simulated registers: AL Control (0x0120, 2 B) and SM configuration (0x0800–0x08FF).");
@@ -202,6 +226,77 @@ public:
         std::copy(data.begin(),data.end(),s->outputs.begin()+offset);
         return success((s->state&15)==8?"Output image updated; transmission occurs on subsequent simulated cycles.":"Output image preloaded locally; outputs are not yet applied by OP cycles.");
     }
+    Result foeTransfer(int position,FoeDirection direction,const FoeOptions& options,const FoeControl& control) override {
+        auto* slave=find(position);
+        if(!view_.connected||!slave)return failure("Scan and select a slave before FoE transfer.");
+        if(view_.running||std::any_of(view_.slaves.begin(),view_.slaves.end(),[](const Slave& s){return (s.state&15)==8;}))
+            return failure("Stop cyclic I/O and move all OP slaves to PRE-OP before FoE transfer.");
+        if(position!=4)return failure("The selected simulated slave does not support FoE.");
+        if(slave->state!=2&&slave->state!=3)return failure("FoE transfer requires confirmed PRE-OP or BOOT.");
+
+        // Use the production protocol/file job, with only the mailbox wire
+        // replaced. Files remain private to this virtual slave, never Snapshot,
+        // Command.data or Result.data. A partial download is not committed.
+        std::deque<foe::Packet> replies;
+        std::vector<uint8_t> incoming;
+        const std::vector<uint8_t>* outgoing=nullptr;
+        std::string filename;
+        size_t outgoingOffset=0;
+        uint32_t expectedWrite=1,readNumber=0;
+        uint64_t virtualMs=0;
+        bool finalRead=false,writeActive=false;
+        constexpr size_t payload=512,ceiling=128u*1024u*1024u;
+        const auto remoteError=[&](uint32_t code,const char* text){
+            replies.push_back({foe::Opcode::Error,code,std::vector<uint8_t>(text,text+std::char_traits<char>::length(text))});
+        };
+        const auto nextRead=[&]{
+            const size_t count=std::min(payload,outgoing->size()-outgoingOffset);
+            std::vector<uint8_t> bytes(outgoing->begin()+outgoingOffset,outgoing->begin()+outgoingOffset+count);
+            outgoingOffset+=count;finalRead=count<payload;
+            replies.push_back({foe::Opcode::Data,++readNumber,std::move(bytes)});
+        };
+        foe::Wire wire;
+        wire.txPayload=payload;wire.rxPayload=payload;
+        wire.nowMs=[&]{return virtualMs;};
+        wire.waitMs=[&](unsigned ms){virtualMs+=ms;};
+        wire.send=[&](const foe::Packet& packet,int){
+            ++virtualMs;
+            switch(packet.opcode) {
+            case foe::Opcode::Write:
+                filename.assign(packet.data.begin(),packet.data.end());incoming.clear();expectedWrite=1;writeActive=true;
+                replies.push_back({foe::Opcode::Ack,0,{}});break;
+            case foe::Opcode::Data:
+                if(!writeActive){remoteError(0x8004,"No active simulated download.");break;}
+                if(packet.number==expectedWrite) {
+                    if(packet.data.size()>ceiling-incoming.size()){remoteError(0x8003,"Simulated file exceeds the size limit.");break;}
+                    incoming.insert(incoming.end(),packet.data.begin(),packet.data.end());++expectedWrite;
+                    if(packet.data.size()<payload){files_[filename]=std::move(incoming);writeActive=false;}
+                }else if(packet.number!=expectedWrite-1){remoteError(0x8005,"Unexpected simulated DATA packet.");break;}
+                replies.push_back({foe::Opcode::Ack,packet.number,{}});break;
+            case foe::Opcode::Read: {
+                filename.assign(packet.data.begin(),packet.data.end());
+                const auto found=files_.find(filename);
+                if(found==files_.end()){remoteError(0x8001,"File not found in the simulated slave.");break;}
+                outgoing=&found->second;outgoingOffset=0;readNumber=0;finalRead=false;nextRead();break;
+            }
+            case foe::Opcode::Ack:
+                if(outgoing&&packet.number==readNumber&&!finalRead)nextRead();
+                break;
+            case foe::Opcode::Error:replies.clear();writeActive=false;break;
+            case foe::Opcode::Busy:break;
+            }
+            return true;
+        };
+        wire.receive=[&](foe::Packet& packet,int timeoutMs){
+            if(replies.empty()){virtualMs+=unsigned(std::max(1,timeoutMs));return 0;}
+            ++virtualMs;packet=std::move(replies.front());replies.pop_front();return 1;
+        };
+        FoeControl callbacks=control;
+        callbacks.progress=[&](const FoeProgress& progress){view_.foe=progress;if(control.progress)control.progress(progress);};
+        auto result=foe::run(std::move(wire),position,direction,options,callbacks);
+        view_.status=result.message;
+        return result;
+    }
     void cycle() override {
         if(!view_.running)return;
         ++view_.cycles;view_.wkc=view_.expectedWkc;
@@ -215,7 +310,7 @@ public:
     }
     void close() override {
         view_.connected=false;view_.mapped=false;view_.running=false;view_.slaves.clear();view_.wkc=0;view_.expectedWkc=0;registers_.clear();
-        view_.status="Disconnected";
+        view_.foe={};view_.status="Disconnected";
     }
     Snapshot snapshot() const override {return view_;}
 };

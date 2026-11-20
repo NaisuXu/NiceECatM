@@ -604,7 +604,7 @@ void actions(Controller& controller,const Snapshot& snapshot) {
     ImGui::SameLine();
     if(ImGui::Button(tr("Save","保存")))saveFile();
     ImGui::SameLine();
-    ImGui::BeginDisabled(snapshot.connection.mode==ConnectionMode::Programming||ui.modeRequest!=0);
+    ImGui::BeginDisabled(snapshot.connection.mode==ConnectionMode::Programming||ui.modeRequest!=0||foeRunning()||snapshot.busy);
     const bool run=ImGui::Button(tr("Run","运行"));
     ImGui::EndDisabled();
     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)&&snapshot.connection.mode==ConnectionMode::Programming)ImGui::SetTooltip("%s",tr("Scripts are unavailable in Programming mode.","编程模式下不能运行脚本。"));
@@ -621,7 +621,9 @@ void actions(Controller& controller,const Snapshot& snapshot) {
         if(!script.runtime)ensureInitialized(&controller);
         cancelPendingRequests();
         if(script.runtime&&script.runtime->load(script.name,std::string(script.source))) {
-            controller.setScriptRunning(true);
+            if(!controller.setScriptRunning(true)) {
+                addLog(tr("Wait for the FoE transfer to finish before starting a script.","请等待 FoE 传输结束后再运行脚本。"),true);return;
+            }
             if(controller.snapshot().connection.mode==ConnectionMode::Programming){controller.setScriptRunning(false);addLog(tr("Scripts are unavailable in Programming mode.","编程模式下不能运行脚本。"),true);return;}
             if(script.runtime->start()){script.running=true;script.error.clear();addLog("Script started");}
             else {controller.setScriptRunning(false);script.error="The script runtime could not start.";addLog(script.error,true);}

@@ -44,8 +44,9 @@ try {
             & $app --ui-smoke-update $updateState --language $language --width 1100 --height 720 --frames 25 --screenshot (Join-Path $smokeRoot "$language-update-$updateState.bmp")
             if ($LASTEXITCODE -ne 0) { throw "Silent update/header smoke failed: $language / $updateState" }
         }
-        foreach ($tab in @('device', 'registers', 'pdo', 'mailbox', 'sdo', 'diagnostics', 'scripts')) {
-            & $app --ui-smoke --language $language --tab $tab --device 5 --frames 25 --screenshot (Join-Path $smokeRoot "$language-$tab.bmp")
+        foreach ($tab in @('device', 'registers', 'pdo', 'sdo', 'foe', 'scripts', 'diagnostics')) {
+            $smokeDevice = if ($tab -eq 'foe') { 4 } else { 5 }
+            & $app --ui-smoke --language $language --tab $tab --device $smokeDevice --frames 25 --screenshot (Join-Path $smokeRoot "$language-$tab.bmp")
             if ($LASTEXITCODE -ne 0) { throw "GUI smoke failed: $language / $tab" }
         }
         foreach ($size in @(@(1600, 1000), @(1366, 768), @(1100, 720))) {
@@ -65,6 +66,9 @@ try {
             $dictionaryCapture = Join-Path $smokeRoot "$language-sdo-populated-$($size[0])x$($size[1]).bmp"
             & $app --ui-smoke --language $language --tab sdo --device 4 --width $size[0] --height $size[1] --frames 40 --screenshot $dictionaryCapture
             if ($LASTEXITCODE -ne 0) { throw "Populated SDO dictionary smoke failed: $language / $size" }
+            $foeCapture = Join-Path $smokeRoot "$language-foe-$($size[0])x$($size[1]).bmp"
+            & $app --ui-smoke --language $language --tab foe --device 4 --width $size[0] --height $size[1] --frames 25 --screenshot $foeCapture
+            if ($LASTEXITCODE -ne 0) { throw "FoE page/layout smoke failed: $language / $size" }
             foreach ($eepromFixture in $eepromFixtures) {
                 $imageCapture = Join-Path $smokeRoot "$language-eeprom-$($eepromFixture.BaseName)-$($size[0])x$($size[1]).bmp"
                 & $app --ui-smoke --language $language --tab eeprom --esi-image $eepromFixture.FullName --width $size[0] --height $size[1] --frames 30 --screenshot $imageCapture
@@ -108,7 +112,7 @@ try {
     if ($LASTEXITCODE -ne 1 -or $missingDriver.ok) { throw 'Missing driver did not produce an explicit failure.' }
     & $app --ui-smoke --frames 25 --screenshot (Join-Path $smokeRoot 'no-driver.bmp')
     if ($LASTEXITCODE -ne 0) { throw 'GUI failed without a capture driver.' }
-    Write-Output "14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics, 6 populated SDO dictionary checks, $eepromChecks offline EEPROM XML/BIN checks, $esiExportChecks basic ESI export/re-import checks, simulation scan and missing-driver checks passed. No hardware scan performed."
+    Write-Output "14 bilingual page captures, 6 silent-update/header checks, 6 window-size captures, 6 populated diagnostics, 6 populated SDO dictionary checks, 6 FoE layout checks, $eepromChecks offline EEPROM XML/BIN checks, $esiExportChecks basic ESI export/re-import checks, simulation scan and missing-driver checks passed. No hardware scan performed."
 } finally {
     $env:SDL_VIDEODRIVER = $oldVideo
     $env:SDL_RENDER_DRIVER = $oldRenderer

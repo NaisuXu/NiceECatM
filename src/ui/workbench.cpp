@@ -44,7 +44,7 @@ const Slave* selected(const Snapshot& s) {
     for(const auto& slave:s.slaves) if(slave.position==ui.selected) return &slave;
     return nullptr;
 }
-bool blocked(const Snapshot& s) { return s.busy||ui.awaiting||ui.modeRequest!=0; }
+bool blocked(const Snapshot& s) { return s.busy||ui.awaiting||ui.modeRequest!=0||foeRunning(); }
 void send(Controller& controller,const Snapshot& s,Command cmd) {
     cmd.generation=s.generation;
     cmd.connection=ui.config;
@@ -63,7 +63,7 @@ void keyValue(const char* en,const char* zh,const std::string& value) {
     ImGui::TableSetColumnIndex(1);ImGui::TextWrapped("%s",value.c_str());
 }
 std::string hexNumber(uint64_t value,int width) {std::ostringstream o;o<<"0x"<<std::hex<<std::uppercase<<std::setw(width)<<std::setfill('0')<<value;return o.str();}
-ImVec4 stateColor(uint16_t state) {if(state&0x10)return red;switch(state&0xf){case 8:return green;case 4:return teal;case 2:return amber;default:return muted;}}
+ImVec4 stateColor(uint16_t state) {if(state&0x10)return red;switch(state&0xf){case 8:return green;case 4:return teal;case 2:case 3:return amber;default:return muted;}}
 std::string stateLabel(uint16_t state) {
     return std::string(stateName(state))+((state&0x10)?tr(" + ERR"," + 错误"):"");
 }
@@ -148,25 +148,24 @@ void configureWorkbenchFonts(ImFont* regular,ImFont* small,ImFont* title,ImFont*
     fonts={regular,small,title,value,mono};
 }
 namespace {
-void pageTabs(const Snapshot& s) {
+void pageTabs() {
     struct Tab { const char* id;const char* en;const char* zh;Icon icon; };
     static const Tab tabs[]={
       {"device","Device / DC","设备 / DC",Icon::Box},
       {"registers","ESC registers","ESC 寄存器",Icon::Registers},
       {"pdo","Buffer · PDO","Buffer · PDO",Icon::Table},
-      {"mailbox","Mailbox","Mailbox",Icon::Mail},
       {"sdo","CoE · SDO","CoE · SDO",Icon::Book},
-      {"diagnostics","Diagnostics","诊断",Icon::Pulse},
+      {"foe","FoE","FoE",Icon::Mail},
       {"scripts","Scripts","脚本",Icon::Logs},
-      {"eeprom","EEPROM","EEPROM",Icon::Registers}};
-    const bool eepromAvailable=ui.config.mode==ConnectionMode::Programming&&!ui.modeRequest;
-    // A mode switch can leave the previous frame's active tab visible for a
-    // moment. Do not render EEPROM controls outside Programming mode.
-    if(!eepromAvailable&&ui.activeTab=="eeprom")ui.activeTab="pdo";
+      {"eeprom","EEPROM","EEPROM",Icon::Registers},
+      {"diagnostics","Diagnostics","诊断",Icon::Pulse}};
+    const bool programming=ui.config.mode==ConnectionMode::Programming;
+    if(programming)ui.activeTab="eeprom";
+    else if(ui.activeTab=="eeprom")ui.activeTab="pdo";
     const bool revealTab=!ui.requestedTab.empty();
     if(revealTab) {
-        if(ui.requestedTab=="eeprom"&&!eepromAvailable)ui.activeTab="pdo";
-        else for(const auto& tab:tabs)if(ui.requestedTab==tab.id)ui.activeTab=tab.id;
+        if(!ui.modeRequest)for(const auto& tab:tabs)
+            if(ui.requestedTab==tab.id&&((std::strcmp(tab.id,"eeprom")==0)==programming))ui.activeTab=tab.id;
         ui.requestedTab.clear();
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{0,0});
@@ -178,14 +177,15 @@ void pageTabs(const Snapshot& s) {
         ImGui::SetCursorScreenPos({tabX,start.y});ImGui::PushID(tab.id);
         const auto p=ImGui::GetCursorScreenPos();const bool active=ui.activeTab==tab.id;
         const char* text=tr(tab.en,tab.zh);const float w=ImGui::CalcTextSize(text).x+38;
-        const bool available=std::strcmp(tab.id,"eeprom")!=0||eepromAvailable;
+        const bool available=!ui.modeRequest&&((std::strcmp(tab.id,"eeprom")==0)==programming);
         ImGui::BeginDisabled(!available);
         if(ImGui::InvisibleButton("tab",{w,34}))ui.activeTab=tab.id;
         const bool hover=ImGui::IsItemHovered();auto* draw=ImGui::GetWindowDrawList();
         if(hover)draw->AddRectFilled(p,{p.x+w,p.y+33},ImGui::GetColorU32({.90f,.94f,.96f,1}),4);
         auto after=ImGui::GetCursorScreenPos();ImGui::SetCursorScreenPos({p.x+9,p.y+9});
-        icon(tab.icon,14,ImGui::GetColorU32(active?teal:muted));ImGui::SetCursorScreenPos(after);
-        draw->AddText({p.x+30,p.y+8},ImGui::GetColorU32(active?teal:muted),text);
+        const auto color=ImGui::GetColorU32(active?teal:muted);
+        icon(tab.icon,14,color);ImGui::SetCursorScreenPos(after);
+        draw->AddText({p.x+30,p.y+8},color,text);
         if(active)draw->AddRectFilled({p.x,p.y+33},{p.x+w,p.y+35},ImGui::GetColorU32(teal),1);
         if(active&&revealTab)ImGui::SetScrollHereX();
         ImGui::EndDisabled();
@@ -214,7 +214,7 @@ void drawWorkbench(Controller& controller) {
         }
     }
     if(snapshot.connected&&!ui.modeRequest)ui.config=snapshot.connection;
-    consume(snapshot);scriptTick(controller,controller.scriptSnapshot());eepromTick(controller,snapshot);
+    consume(snapshot);scriptTick(controller,controller.scriptSnapshot());eepromTick(controller,snapshot);foeTick(controller,snapshot);
     const auto* viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{0,0});
@@ -228,18 +228,19 @@ void drawWorkbench(Controller& controller) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{24,12});
     ImGui::BeginChild("work-area",{0,0},ImGuiChildFlags_AlwaysUseWindowPadding,ImGuiWindowFlags_NoScrollbar);
     stateToolbar(controller,snapshot);ImGui::Dummy({0,2});
-    observeServiceResults(snapshot);pageTabs(snapshot);
+    observeServiceResults(snapshot);pageTabs();
     // Reserve space for controller messages and multi-line script errors.
     const float logHeight=height<840?150.f:180.f;
     const float contentHeight=std::max(180.f,ImGui::GetContentRegionAvail().y-logHeight-6.f);
     ImGui::BeginChild("workbench-pages",{0,contentHeight},ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar);
-    if(ui.activeTab=="device")devicePage(controller,snapshot);
+    if(ui.modeRequest)note("Changing operating mode…","正在切换运行模式…");
+    else if(ui.config.mode==ConnectionMode::Programming)eepromPage(controller,snapshot);
+    else if(ui.activeTab=="device")devicePage(controller,snapshot);
     else if(ui.activeTab=="registers")registersPage(controller,snapshot);
-    else if(ui.activeTab=="mailbox")mailboxPage(snapshot);
     else if(ui.activeTab=="sdo")sdoPage(controller,snapshot);
+    else if(ui.activeTab=="foe")foePage(controller,snapshot);
     else if(ui.activeTab=="diagnostics")diagnosticsPage(snapshot);
     else if(ui.activeTab=="scripts")scriptPage(controller,snapshot);
-    else if(ui.activeTab=="eeprom"&&ui.config.mode==ConnectionMode::Programming&&!ui.modeRequest)eepromPage(controller,snapshot);
     else bufferPage(controller,snapshot);
     ImGui::EndChild();
     eventLog(controller,snapshot,logHeight);

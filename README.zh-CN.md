@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-面向设备开发与台架测试的 EtherCAT 图形工具，采用 C++17、CMake、SOEM V2、SDL3 和 Dear ImGui。提供设备扫描、AL 状态控制、PDO 信号测试、ESC 寄存器访问、CoE SDO 访问、EEPROM 编程和 Lua 自动化。
+面向设备开发与台架测试的 EtherCAT 图形工具，采用 C++17、CMake、SOEM V2、SDL3 和 Dear ImGui。提供设备扫描、AL 状态控制、PDO 信号测试、ESC 寄存器访问、CoE SDO 访问、FoE 文件传输、EEPROM 编程和 Lua 自动化。
 
 Windows x64 是当前本机验证的平台。Ubuntu x86/ARM 为构建目标，仍需对应平台与硬件验证；不同平台和架构分别生成各自的可执行文件。
 
@@ -53,7 +53,9 @@ Linux 需要 C++17 编译器、CMake 3.28+、Make，以及所选 SDL 显示后�
 
 CoE / SDO 显示所选从站的对象字典，来源包括匹配的 ESI，以及从站支持时在 PRE-OP 获取的在线 SDO Information。选择条目可填入地址和类型，当前值需手动读取。列表区分来源并提示获取不完整的情况，不会把 ESI 默认值显示成设备当前值。
 
-左侧提供**模拟／硬件／编程**三种模式，默认硬件；断开连接、停止脚本且无活动操作时可以切换。编程模式使用单网口、专用 INIT 扫描，不进行 PDO 映射。**EEPROM** 页仅编程模式可用，支持从受支持的固定设备 ESI 描述或有效 SII BIN 离线准备／导出镜像、读取 EEPROM，以及烧录所选从站并完整回读比较。每次写入均确认目标、镜像与容量，Vendor ID／Product Code 不同会提示但允许烧录；写入后取消不会恢复原内容。按设备要求使配置生效，再断开、选择硬件并重新扫描后使用普通 I/O。详见 [EEPROM 使用说明](docs/native.zh-CN.md#eeprom-编程)。
+**FoE** 在确认的 PRE-OP 或 BOOT 状态上传／下载文件，要求周期 I/O 与脚本已停止。共用顶部 **BOOT / INIT / PRE-OP / SAFE-OP / OP** 按钮；BOOT 沿用当前／全部从站范围，并检查有效的 Bootstrap Mailbox。文件名、密码及固件激活步骤以厂商要求为准。退出 BOOT 后需要重新扫描，才能恢复周期 I/O。FoE 完成仅表示文件传输成功，固件是否生效由从站决定。操作流程见[发布包用户说明](resources/release/README.zh-CN.md#foe-文件传输)。
+
+左侧提供**模拟／硬件／编程**三种模式，默认硬件；断开连接、停止脚本且无活动操作时可以切换。编程模式使用单网口、专用 INIT 扫描，不进行 PDO 映射，且只能选中 **EEPROM** 页面；EEPROM 在硬件／模拟模式不可选。支持从受支持的固定设备 ESI 描述或有效 SII BIN 离线准备／导出镜像、读取 EEPROM，以及烧录所选从站并完整回读比较。每次写入均确认目标、镜像与容量，Vendor ID／Product Code 不同会提示但允许烧录；写入后取消不会恢复原内容。按设备要求使配置生效，再断开、选择硬件并重新扫描后使用普通 I/O。详见 [EEPROM 使用说明](docs/native.zh-CN.md#eeprom-编程)。
 
 `NiceECatM --esi-image file.xml`（或 `file.bin`）会在离线编程页面打开镜像，不扫描设备，也不打开抓包连接。
 
@@ -90,7 +92,7 @@ dist/         安装生成的应用发布包
 - [通讯性能与网卡调优](docs/performance.zh-CN.md)
 - [第三方版本与许可证](THIRD_PARTY.md)
 
-当前尚未实现 FoE、EoE、SoE、VoE 服务、BOOT 流程和 DC 触发配置。对象字典覆盖范围取决于 ESI 和从站的 SDO Information 能力；在线发现有请求和时间上限，可能返回部分字典。同一总线双口冗余和 overlapped 映射需要结合目标网卡与从站完成验收。
+当前尚未实现 EoE、SoE、VoE 服务和 DC 触发配置。FoE PRE-OP／BOOT 传输已在单台从站上完成实机检查，其他目标固件和设备专用的固件激活流程仍需验收。对象字典覆盖范围取决于 ESI 和从站的 SDO Information 能力；在线发现有请求和时间上限，可能返回部分字典。同一总线双口冗余和 overlapped 映射需要结合目标网卡与从站完成验收。
 
 ## 许可证
 

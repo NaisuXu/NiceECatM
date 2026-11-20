@@ -29,7 +29,7 @@ Lua bus and signal handles resolve operations against the current controller. Th
 | `src/app` | Process entry, CLI and SDL desktop lifecycle |
 | `src/model` | Shared value types and typed PDO conversion |
 | `src/master` | Command queue, backend ownership, cycles and snapshots |
-| `src/ethercat` | SOEM and simulation implementations, mapping checks and bounded EEPROM transactions |
+| `src/ethercat` | SOEM/simulation backends, mapping checks, bounded EEPROM/FoE jobs and bootstrap mailbox sessions |
 | `src/script` | Lua state, scheduler and controller bridge |
 | `src/esi` | XML catalog, description matching and SII image validation/generation |
 | `src/platform` | Executable-relative paths and Windows capture binding |
@@ -41,7 +41,7 @@ Lua bus and signal handles resolve operations against the current controller. Th
 
 ESC physical register offsets, logical process-image offsets and SDO Index/SubIndex are different address spaces. PDOs do not require CoE. SDO is a CoE service; mailbox transport also carries other protocols, each of which needs its own implementation.
 
-INIT, PRE-OP, SAFE-OP and OP have confirmed request/readback paths. SAFE-OP and OP start cyclic exchange; lower states stop exchange. In SAFE-OP the master can exchange process data, but the slave does not apply output PDOs as normal active outputs. BOOT state and firmware workflows are not implemented.
+The shared toolbar exposes **BOOT / INIT / PRE-OP / SAFE-OP / OP**, with confirmed request/readback paths. SAFE-OP and OP start cyclic exchange; INIT/PRE-OP stop exchange. In SAFE-OP the master can exchange process data, but the slave does not apply output PDOs as normal active outputs. BOOT requires stopped cyclic I/O and scripts, validates the full selected scope before execution, and confirms targets individually. It invalidates PDO mapping; exiting through INIT restores ordinary mailboxes, and a scan is required before resuming cyclic I/O.
 
 Output writes prepare or update the mapped output image and preserve neighboring bits. Input and output copies remain separate. Bounds, scalar type, direction, mapping validity and device-state checks apply before modification. Register writes affecting SM/FMMU or PDO mapping invalidate the current mapping until a new scan.
 
@@ -55,9 +55,23 @@ The host target period is selectable from 500 us to 100 ms. Actual cycle and max
 
 Lua timers use elapsed host time. Cycle callbacks check bus cycle counters in received snapshots and may skip intermediate cycles; they cannot provide a hard real-time per-frame control loop. Callbacks run serially and must return.
 
+## FoE transfer and BOOT sessions
+
+The page order is Device / DC, ESC registers, BufferPDO, CoE / SDO, FoE, Scripts, EEPROM and Diagnostics. FoE uses the topology selection without another target selector. Hardware/Simulation provide FoE in confirmed PRE-OP or BOOT with no running cyclic I/O, OP slaves or scripts; selecting the page or starting a transfer does not change AL state. Programming selects EEPROM and disables all other pages; it does not provide a FoE recovery path. Runtime FoE declaration and bootstrap mailbox availability are reported separately: an absent ordinary FoE declaration does not by itself reject a valid BOOT session, and a declaration does not prove that a particular filename or direction is supported.
+
+`src/ethercat/foe_job.*` owns DATA/ACK sequencing, asymmetric mailbox capacities, BUSY/duplicates, bounded retry/deadline handling and cooperative cancellation over the existing SOEM transport. Download uses an immutable temporary source; upload streams to a sibling temporary file and commits only after the final exchange. Files never enter FoE command/result payloads, result history or snapshots. Jobs bind request, generation and slave; active transfers reject conflicting operations and script starts. Disconnect/shutdown cancel first, then the I/O owner closes the transport. Passwords are not saved or logged. The application file ceiling is 128 MiB; upload defaults to 16 MiB.
+
+The job uses short mailbox waits instead of the whole-transfer blocking `ecx_FOEread/write` helpers. BUSY cannot extend the total/no-progress deadlines indefinitely, and protocol retries do not restart the entire download. Download progress counts acknowledged bytes; uploads normally have no advertised total, so the receive limit is not shown as a total length. Device filenames are independent of local paths, checked against the encoded-byte capacity of the sending mailbox and never silently truncated. Errors preserve the remote code/text alongside local file, transport, timeout and target-change failures; progress snapshots remain small and the Log does not emit a line for every packet.
+
+`src/ethercat/bootstrap_session.hpp` retains the normal mailbox configuration across partial failures. BOOT entry uses fresh individual AL reads, confirmed INIT, validated SII bootstrap values, verified SM0/SM1 writes/readback and individual BOOT confirmation. Exit confirms INIT and verifies normal-SM restoration before clearing the saved configuration. It does not use a broadcast or aggregate state to establish BOOT. PDO/SDO access explicitly excludes BOOT.
+
+BOOT respects the shared current/all-slave scope. All-slave entry validates every target before changing any state; a runtime transition failure stops subsequent transitions without rolling back completed ones. A target that cannot complete a normal Hardware scan is outside the recovery scope. FoE shares the existing SOEM context and redundancy transport; overlapped PDO mapping does not alter FoE packet layout.
+
+**FoE completion confirms file transfer; whether firmware is activated is determined by the slave.** Cancellation cannot undo accepted slave data, and OP is never restored automatically. Directory listing, resume and batch transfer are not implemented. Simulation and fault-injection tests cover protocol/session handling; one physical ECAT_Device was checked for PRE-OP/BOOT upload, PRE-OP download/readback and filename/password rejection. This does not establish support for other slave firmware or validate firmware activation; see [validation](native-validation.md) for the measured scope.
+
 ## EEPROM programming
 
-Simulation, Hardware and Programming are mutually exclusive connection modes, defaulting to Hardware. Mode changes require a disconnected bus, stopped scripts and no active job. Programming uses the same I/O owner and SOEM context as the workbench, with a single interface and no PDO mapping or cyclic exchange. A dedicated BRD/AP scan inventories responding ESCs and confirms INIT without requiring valid SII. Ordinary state, register, mailbox and Lua operations are unavailable in this mode; the EEPROM page is disabled in the other modes.
+Simulation, Hardware and Programming are mutually exclusive connection modes, defaulting to Hardware. Mode changes require a disconnected bus, stopped scripts and no active job. Programming uses the same I/O owner and SOEM context as the workbench, with a single interface and no PDO mapping or cyclic exchange. A dedicated BRD/AP scan inventories responding ESCs and confirms INIT without requiring valid SII. EEPROM is the only selectable page in this mode; ordinary state, register, mailbox and Lua operations are unavailable. The EEPROM page is disabled in the other modes.
 
 `src/esi/sii_image.*` parses supported ESI descriptions or validates a BIN into an immutable image. `src/ethercat/eeprom_job.*` implements bounded EEPROM commands, status checks, cancellation and ownership restoration. The GUI submits read/write requests through the Controller and displays published progress. Before a write, the worker validates capacity and image structure, rechecks topology and compares the target with its own scanned identity. A different identity in the new image is allowed and shown in the existing operation confirmation.
 
@@ -65,7 +79,7 @@ Writes skip unchanged words and compare the complete readback. Generation and me
 
 ## Current service limits
 
-The application implements scanning, four-state control, mapped PDO access, ESC access, CoE SDO access, bounded SDO Information discovery, ESI dictionary/display metadata, EEPROM programming and Lua automation. Dictionary descriptions are immutable and shared across snapshots; live and offline dictionaries remain separate, with online metadata taking precedence in the UI. Device values are read explicitly and cached by connection, slave and object address. It does not implement FoE, EoE, SoE, VoE, BOOT workflows, DC SYNC trigger configuration, or per-port failover counters.
+The application implements scanning, BOOT/INIT/PRE-OP/SAFE-OP/OP control, mapped PDO access, ESC access, CoE SDO access, bounded SDO Information discovery, ESI dictionary/display metadata, GUI FoE file transfer, EEPROM programming and Lua automation. Dictionary descriptions are immutable and shared across snapshots; live and offline dictionaries remain separate, with online metadata taking precedence in the UI. Device values are read explicitly and cached by connection, slave and object address. EoE, SoE, VoE, vendor-specific firmware activation, concurrent cyclic FoE, Lua/CLI file-transfer APIs, DC SYNC trigger configuration and per-port failover counters are not implemented.
 
 UI capability declarations are kept separate from implemented services. No menu or device flag establishes that a protocol path or redundancy recovery has been validated on hardware.
 

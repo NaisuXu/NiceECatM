@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A graphical EtherCAT development and test workbench built with C++17, CMake, SOEM V2, SDL3 and Dear ImGui. It provides device scanning, AL-state control, PDO signal testing, ESC register access, CoE SDO access, EEPROM programming and Lua automation.
+A graphical EtherCAT development and test workbench built with C++17, CMake, SOEM V2, SDL3 and Dear ImGui. It provides device scanning, AL-state control, PDO signal testing, ESC register access, CoE SDO access, FoE file transfer, EEPROM programming and Lua automation.
 
 Windows x64 is the locally validated build target. Ubuntu x86/ARM are supported build targets that still require platform and hardware validation. Each platform and architecture needs its own executable.
 
@@ -53,7 +53,9 @@ The default target period is 10 ms; available periods are 500 us, 1, 2, 5, 10, 2
 
 CoE / SDO displays the selected slave's object dictionary from a matching ESI and, when supported, online SDO Information in PRE-OP. Select an entry to fill its address and type; read values explicitly. Sources and partial discovery are identified, and ESI default values are never presented as current device values.
 
-The left selector offers **Simulation / Hardware / Programming**, defaulting to Hardware. Change modes while disconnected, with scripts stopped and no operation active. Programming uses one interface, a dedicated INIT scan and no PDO mapping. Only Programming enables the **EEPROM** page, where supported fixed-device ESI descriptions or validated SII BIN files can be prepared/exported offline, read from a slave, or programmed with full readback comparison. Each write confirms the target, image and capacity; different Vendor IDs or Product Codes are shown and allowed. Cancelling a write does not restore earlier contents. Follow the device's activation requirements, disconnect, select Hardware and scan again before normal I/O. See the [EEPROM guide](docs/native.md#eeprom-programming).
+**FoE** uploads/downloads files in confirmed PRE-OP or BOOT with cyclic I/O and scripts stopped. Use the shared **BOOT / INIT / PRE-OP / SAFE-OP / OP** toolbar; BOOT follows the selected current/all-slave scope and requires valid bootstrap mailboxes. Filename, password and firmware activation follow the device vendor's procedure. Exiting BOOT requires a new scan before cyclic I/O. FoE completion confirms file transfer; whether firmware is activated is determined by the slave. The [release user guide](resources/release/README.md#foe-file-transfer) describes the workflow.
+
+The left selector offers **Simulation / Hardware / Programming**, defaulting to Hardware. Change modes while disconnected, with scripts stopped and no operation active. Programming uses one interface, a dedicated INIT scan and no PDO mapping; only the **EEPROM** page can be selected in this mode. EEPROM is disabled in Hardware/Simulation. Supported fixed-device ESI descriptions or validated SII BIN files can be prepared/exported offline, read from a slave, or programmed with full readback comparison. Each write confirms the target, image and capacity; different Vendor IDs or Product Codes are shown and allowed. Cancelling a write does not restore earlier contents. Follow the device's activation requirements, disconnect, select Hardware and scan again before normal I/O. See the [EEPROM guide](docs/native.md#eeprom-programming).
 
 `NiceECatM --esi-image file.xml` (or `file.bin`) opens the image in the offline Programming page without scanning or opening a capture connection.
 
@@ -90,7 +92,7 @@ dist/         Installed application packages
 - [Communication performance and adapter tuning](docs/performance.md)
 - [Third-party versions and licenses](THIRD_PARTY.md)
 
-FoE, EoE, SoE and VoE services, BOOT workflows and DC trigger configuration are not implemented. Object dictionary coverage depends on the ESI and the slave's SDO Information support; online discovery is bounded and may return a partial dictionary. Same-bus redundancy and overlapped mapping require acceptance testing with the intended adapters and slaves.
+EoE, SoE and VoE services and DC trigger configuration are not implemented. FoE PRE-OP/BOOT transfer has hardware test coverage on one slave; other target firmware and device-specific firmware activation still require acceptance testing. Object dictionary coverage depends on the ESI and the slave's SDO Information support; online discovery is bounded and may return a partial dictionary. Same-bus redundancy and overlapped mapping require acceptance testing with the intended adapters and slaves.
 
 ## License
 

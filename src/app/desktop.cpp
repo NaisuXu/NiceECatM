@@ -143,6 +143,21 @@ int runDesktop(int argc,char**argv) {
             std::cerr<<"EEPROM UI smoke did not remain in offline Programming mode.\n";exitCode=1;
           }
         }
+        if(smoke&&tab=="foe") {
+          int checked=0;
+          for(const auto* child:ImGui::GetCurrentContext()->Windows) {
+            const char* leaf=std::strrchr(child->Name,'/');leaf=leaf?leaf+1:child->Name;
+            if(!child->Active)continue;
+            const bool card=std::strncmp(leaf,"foe-file_",9)==0||std::strncmp(leaf,"foe-transfer_",13)==0;
+            const bool body=std::strncmp(leaf,"foe-file-body_",14)==0||std::strncmp(leaf,"foe-transfer-body_",18)==0;
+            if(!card&&!body)continue;
+            ++checked;
+            if(child->ScrollMax.x>0.5f||child->ScrollMax.y>0.5f) {
+              std::cerr<<"FoE default layout overflow: "<<child->Name<<" ("<<child->ScrollMax.x<<", "<<child->ScrollMax.y<<")\n";exitCode=1;
+            }
+          }
+          if(checked!=4){std::cerr<<"FoE layout check did not find both cards and bodies.\n";exitCode=1;}
+        }
         if(smoke&&!smokeCyclic&&tab=="sdo"&&device==4) {
           const auto snapshot=controller.snapshot();
           if(snapshot.slaves.size()<4||!snapshot.slaves[3].sdoDictionary||!snapshot.slaves[3].sdoDictionary->complete||snapshot.slaves[3].sdoDictionary->objects.size()!=4) {

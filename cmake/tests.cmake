@@ -3,7 +3,7 @@
 
 include(CTest)
 if(NICEECATM_BUILD_TESTS)
-  foreach(eeprom_test sii_image eeprom_job eeprom_controller)
+  foreach(eeprom_test sii_image eeprom_job eeprom_controller foe_job foe_simulation foe_controller)
     add_executable(niceecatm_${eeprom_test}_tests tests/${eeprom_test}_tests.cpp)
     target_link_libraries(niceecatm_${eeprom_test}_tests PRIVATE niceecatm_core)
     target_compile_definitions(niceecatm_${eeprom_test}_tests PRIVATE NICEECATM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

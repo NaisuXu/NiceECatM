@@ -333,28 +333,6 @@ void registersPage(Controller& c,const Snapshot& s) {
     ImGui::PopStyleVar();ImGui::EndChild();
 }
 
-void mailboxPage(const Snapshot& s) {
-    ImGui::BeginChild("mailbox-page",{0,0});selectedDeviceHeader(s);const auto* d=selected(s);const float height=std::max(405.0f,ImGui::GetContentRegionAvail().y-2);
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(0,0));
-    if(ImGui::BeginTable("mailbox-columns",2,ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("protocols",ImGuiTableColumnFlags_WidthStretch,1.4f);ImGui::TableSetupColumn("availability",ImGuiTableColumnFlags_WidthStretch,1.0f);ImGui::TableNextColumn();
-        beginCard("mailbox-protocols",{ImGui::GetContentRegionAvail().x-gutter,height});cardHeader(tr("Mailbox protocol capabilities","Mailbox 协议能力"),Icon::Mail);
-        smallNote("Mailbox is a transport; CoE / SDO is one of its services.","Mailbox 是传输通道，CoE / SDO 是其中一种上层服务。");divider();ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,ImVec2(8,10));
-        if(ImGui::BeginTable("mailbox-support",3,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH)) {
-            ImGui::TableSetupColumn(tr("Protocol","协议"),ImGuiTableColumnFlags_WidthFixed,88);ImGui::TableSetupColumn(tr("Slave declares","从站声明"),ImGuiTableColumnFlags_WidthFixed,100);ImGui::TableSetupColumn(tr("Tool service","工具服务"));ImGui::TableHeadersRow();
-            const char* names[]={"CoE / SDO","FoE","EoE","SoE","VoE","AoE"};const unsigned masks[]={4,8,2,16,32,1};
-            for(int i=0;i<6;++i){ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted(names[i]);ImGui::TableNextColumn();const bool yes=d&&(d->mailboxProtocols&masks[i]);pill(d?(yes?tr("Yes","支持"):tr("No","未声明")):"—",yes?teal:muted);ImGui::TableNextColumn();ImGui::TextWrapped("%s",i==0?tr("Manual SDO read / write","手动 SDO 读写"):tr("Not connected","尚未接入"));}ImGui::EndTable();
-        }
-        ImGui::PopStyleVar();divider();smallNote("The declaration belongs to the slave. Each protocol requires a separate service adapter in the tool.","能力声明属于从站，各协议需要工具接入独立的服务适配器。");endCard();ImGui::TableNextColumn();
-        beginCard("mailbox-availability",{0,height});cardHeader(tr("Transport & availability","传输与可用性"),Icon::Network);
-        if(d){if(keyTable("mailbox-summary",128)){keyValue("Protocol mask","协议掩码",hexNumber(d->mailboxProtocols,4));keyValue("Actual AL state","实际 AL 状态",stateLabel(d->state));const unsigned state=d->state&15;keyValue("Mailbox phase","Mailbox 阶段",state==1?tr("Unavailable in INIT","INIT 中不可用"):(state==2||state==4||state==8?tr("Mailbox phase available","状态允许 Mailbox"):tr("Unconfirmed state","未确认的状态")));keyValue("Synchronous access","同步访问",s.running?tr("Stop cyclic exchange first","需先停止周期交换"):tr("Cycle stopped","周期已停止"));endKeyTable();}}
-        else smallNote("Select a slave to inspect its declaration.","请选择从站查看其能力声明。");
-        divider();cardHeader(tr("CoE · SDO","CoE · SDO"),Icon::Book);smallNote("Use the CoE · SDO tab for manual parameter transactions when CoE is declared and the actual state is PRE-OP, SAFE-OP or OP.","从站声明支持 CoE 且实际状态为 PRE-OP、SAFE-OP 或 OP 时，可在 CoE · SDO 页手动访问参数。");
-        divider();cardHeader(tr("Raw Mailbox / other protocols","原始 Mailbox / 其他协议"),Icon::Mail);smallNote("Raw Mailbox send / receive, FoE file transfer, EoE tunnelling, SoE and VoE are pending native services. No response is fabricated.","原始 Mailbox 收发、FoE 文件传输、EoE 隧道、SoE 和 VoE 原生服务待接入，不生成虚假的设备响应。");endCard();ImGui::EndTable();
-    }
-    ImGui::PopStyleVar();ImGui::EndChild();
-}
-
 void sdoPage(Controller& c,const Snapshot& s) {
     sdoRead.controller=&c;sdoRead.observe(s);const auto* d=selected(s);
     const auto state=d?d->state&0xf:0;const bool coe=d&&(d->mailboxProtocols&4);
