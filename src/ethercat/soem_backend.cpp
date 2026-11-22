@@ -14,6 +14,7 @@
 #include "ethercat/foe_job.hpp"
 #include "ethercat/bootstrap_session.hpp"
 #include "ethercat/pdo_layout.hpp"
+#include "ethercat/pdo_description_queue.hpp"
 #include "platform/pcap_runtime.h"
 #include <algorithm>
 #include <chrono>
@@ -141,6 +142,9 @@ class SoemBackend final: public Backend {
     std::vector<uint16_t> requested_;
     CyclicStatePoll stateMonitor_;
     std::vector<Result> diagnostics_;
+    std::map<int,PdoDescriptionQueue> pdoDescriptions_;
+    std::unique_ptr<ec_ODlistt> pdoObjects_;
+    std::unique_ptr<ec_OElistt> pdoObjectEntries_;
     struct MailboxConfig {
         uint16_t txOffset=0,txLength=0,rxOffset=0,rxLength=0;
         ec_smt sm0{},sm1{};
@@ -440,6 +444,7 @@ class SoemBackend final: public Backend {
     }
     void invalidateMapping() {
         view_.mapped=false;
+        pdoDescriptions_.clear();
         for(auto& slave:view_.slaves) {
             slave.inputLayoutKnown=slave.outputLayoutKnown=false;slave.pdoEntries.clear();
             slave.pdoIssue="Process mapping invalid; scan again.";
@@ -511,30 +516,47 @@ class SoemBackend final: public Backend {
         }
         return false;
     }
-    void describeCoeNames(int slave,std::vector<PdoEntry>& entries,Clock::time_point deadline) {
-        if(!(context_->slavelist[slave].CoEdetails&ECT_COEDET_SDOINFO))return;
-        // SDO Info has a fixed SOEM receive timeout; reserve enough budget for
-        // its entire request and stop after the first unsupported response.
-        auto objects=std::make_unique<ec_ODlistt>();auto descriptions=std::make_unique<ec_OElistt>();
-        objects->Slave=uint16(slave);
-        struct Description { uint16_t type=0;unsigned bits=0;std::vector<LocalizedText> names; };
-        std::map<uint32_t,Description> cache;unsigned requests=0;
-        for(auto& entry:entries) {
-            if(entry.padding)continue;
-            const uint32_t key=(uint32_t(entry.index)<<8)|entry.subindex;
-            if(const auto found=cache.find(key);found!=cache.end()) {
-                entry.names=found->second.names;
-                if(found->second.bits>=entry.bitLength)entry.type=pdoType(found->second.type,entry.bitLength);
-                continue;
-            }
-            if(requests>=128||deadline-Clock::now()<std::chrono::microseconds(EC_TIMEOUTRXM+EC_TIMEOUTTXM+10000))break;
-            ++requests;objects->Index[0]=entry.index;*descriptions={};
-            if(ecx_readOEsingle(context_.get(),0,entry.subindex,objects.get(),descriptions.get())<=0||!descriptions->Entries)break;
-            const unsigned bitLength=descriptions->BitLength[entry.subindex];
-            if(bitLength>=entry.bitLength)entry.type=pdoType(descriptions->DataType[entry.subindex],entry.bitLength);
-            if(descriptions->Name[entry.subindex][0])entry.names.push_back({0,descriptions->Name[entry.subindex]});
-            cache.emplace(key,Description{descriptions->DataType[entry.subindex],bitLength,entry.names});
+    PdoDescription readPdoDescription(int slave,uint16_t index,uint8_t sub) {
+        if(!pdoObjects_)pdoObjects_=std::make_unique<ec_ODlistt>();
+        if(!pdoObjectEntries_)pdoObjectEntries_=std::make_unique<ec_OElistt>();
+        pdoObjects_->Slave=uint16_t(slave);pdoObjects_->Index[0]=index;
+        pdoObjectEntries_->Entries=0;
+        // Keep optional mailbox failures local to this query. Other commands
+        // still need to see any errors that were pending when it started.
+        std::vector<ec_errort> saved;ec_errort error{};
+        while(ecx_poperror(context_.get(),&error))saved.push_back(error);
+        const int wkc=ecx_readOEsingle(context_.get(),0,sub,pdoObjects_.get(),pdoObjectEntries_.get());
+        bool sawError=false,allMissing=true;
+        while(ecx_poperror(context_.get(),&error)) {
+            sawError=true;
+            if(error.Etype!=EC_ERR_TYPE_SDOINFO_ERROR||
+               (uint32_t(error.AbortCode)!=0x06020000&&uint32_t(error.AbortCode)!=0x06090011))allMissing=false;
         }
+        for(const auto& old:saved)ecx_pusherror(context_.get(),&old);
+        if(wkc<=0||!pdoObjectEntries_->Entries)
+            return {sawError&&allMissing?PdoDescriptionStatus::Missing:PdoDescriptionStatus::Failed,0,0,{}};
+        return {PdoDescriptionStatus::Available,pdoObjectEntries_->DataType[sub],
+                pdoObjectEntries_->BitLength[sub],pdoObjectEntries_->Name[sub]};
+    }
+    bool advancePdoDescriptions(Slave& slave,PdoDescriptionQueue& queue) {
+        const bool changed=queue.step(slave.pdoEntries,[&](uint16_t index,uint8_t sub) {
+            return readPdoDescription(slave.position,index,sub);
+        });
+        if(!queue.pending()&&queue.unavailable()) {
+            auto message="Slave "+std::to_string(slave.position)+": CoE descriptions unavailable for "+
+                std::to_string(queue.unavailable())+" mapped object(s).";
+            if(queue.stoppedAfterFailures())message+=" Stopped after three consecutive SDO Information request failures.";
+            diagnostics_.push_back({true,std::move(message),{}});
+        }
+        return changed;
+    }
+    void describeCoeNames(Slave& slave,Clock::time_point deadline) {
+        if(!slave.sdoInfo)return;
+        PdoDescriptionQueue queue(slave.pdoEntries);
+        const auto reserve=std::chrono::microseconds(EC_TIMEOUTRXM+EC_TIMEOUTTXM+10000);
+        for(unsigned n=0;n<128&&queue.pending()&&slave.state==EC_STATE_PRE_OP&&deadline-Clock::now()>=reserve;++n)
+            advancePdoDescriptions(slave,queue);
+        if(queue.pending())pdoDescriptions_.emplace(slave.position,std::move(queue));
     }
     void discoverPdoEntries() {
         if(!context_||!view_.mapped)return;
@@ -579,7 +601,7 @@ class SoemBackend final: public Backend {
                     slave.pdoIssue+=std::string(input?"IN: ":"OUT: ")+issue;
                 }
             }
-            if(coe)describeCoeNames(slave.position,slave.pdoEntries,deadline);
+            if(coe)describeCoeNames(slave,deadline);
             else if(restorePdi)ecx_eeprom2pdi(context_.get(),uint16(slave.position));
             // Consume only optional description errors. Actual scan failures
             // are restored below and remain visible in the normal event log.
@@ -792,13 +814,13 @@ public:
         view_.wkc=0;view_.cycles=0;view_.errors=0;invalidCycles_=0;
         view_.actualCycleUs=0;view_.maxJitterUs=0;view_.missed=0;previousCycle_={};invalidSince_={};statePoll_=Clock::now();
         stateMonitor_.reset();
-        discoverPdoEntries();
         // SOEM config_init requests PRE-OP with ACK set. Digital I/O ESCs
         // using device emulation mirror that ACK bit into AL Status. Finish
         // with plain PRE-OP and confirm the unmasked state, so real AL errors
         // remain visible and prevent a successful scan result.
         const bool preOpConfirmed=applyState(0,EC_STATE_PRE_OP,false);
         ecx_readstate(context_.get());updateSlaves();
+        discoverPdoEntries();
         if(!preOpConfirmed)return error(errors("Scan did not finish in PRE-OP; "+stateFailure(0)));
         return done(errors("Scanned "+std::to_string(found)+" real EtherCAT slave(s); mapping prepared; cyclic exchange stopped"));
     }
@@ -1200,6 +1222,20 @@ public:
             view_.status="Process data failed continuously for 2 s; exchange stopped. Inspect state and explicitly restart";
         }
     }
+    bool hasPendingPdoDescriptions() const override {
+        if(!initialized_||!view_.connected||!view_.mapped||view_.running||
+           view_.connection.mode!=ConnectionMode::Hardware||pdoDescriptions_.empty())return false;
+        return std::all_of(view_.slaves.begin(),view_.slaves.end(),
+                           [](const Slave& slave){return slave.state==EC_STATE_PRE_OP;});
+    }
+    bool servicePdoDescriptions() override {
+        if(!hasPendingPdoDescriptions())return false;
+        auto pending=pdoDescriptions_.begin();
+        auto& slave=view_.slaves[size_t(pending->first-1)];
+        const bool changed=advancePdoDescriptions(slave,pending->second);
+        if(!pending->second.pending())pdoDescriptions_.erase(pending);
+        return changed;
+    }
     void close() override {
         // Destructor/disconnect does not send any unrequested output value. If
         // OP is active, request SAFE-OP before closing the raw interfaces.
@@ -1220,6 +1256,7 @@ public:
 #endif
         }
         initialized_=false;context_.reset();redundant_.reset();io_.clear();requested_.clear();
+        pdoDescriptions_.clear();pdoObjects_.reset();pdoObjectEntries_.reset();
         bootstrapSlaves_.clear();mailboxSessions_.clear();
         stateMonitor_.reset();statePoll_={};diagnostics_.clear();
         view_.connected=false;view_.mapped=false;view_.running=false;view_.slaves.clear();view_.wkc=0;view_.expectedWkc=0;invalidSince_={};invalidCycles_=0;

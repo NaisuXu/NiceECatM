@@ -316,6 +316,11 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"Invalid Index / SubIndex.","Index / SubIndex 无效。"},
     {"Read capacity must be 1…4096 bytes.","读取容量必须为 1…4096 字节。"},
     {"No matching ESI description","没有匹配的 ESI 描述"},
+    {"ESI XML directory","ESI XML 搜索目录"},
+    {"No XML files in the ESI directory","ESI 目录中没有 XML 文件"},
+    {"ESI directory does not exist","ESI 搜索目录不存在"},
+    {"Additional slaves with ESI diagnostics","其他存在 ESI 匹配问题的从站数量"},
+    {"Stopped after three consecutive SDO Information request failures.","连续三次 SDO Information 请求失败，已停止查询描述。"},
     {"Simulation fixture","模拟数据"},
     {"Ambiguous ESI device identity","多个 ESI 描述具有相同设备标识，无法唯一匹配"},
     {"ESI revision mismatch","ESI 修订号不匹配"},
@@ -338,6 +343,12 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"ESI library exceeds 1024 XML files","ESI 描述库超出 1024 个 XML 文件上限"},
     {"Cannot access ESI library directory","无法访问 ESI 描述库目录"},
     {"ESI library exceeds 16384 device descriptions","ESI 描述库超出 16384 条设备描述上限"},
+    {"Duplicate ESI dictionary data type","ESI 对象字典数据类型重复"},
+    {"Cyclic or excessively nested ESI dictionary type","ESI 对象字典类型存在循环引用或嵌套过深"},
+    {"Duplicate ESI dictionary object index","ESI 对象字典索引重复"},
+    {"Too many ESI dictionary entries","ESI 对象字典条目数量超出上限"},
+    {"Duplicate ESI dictionary subindex","ESI 对象字典子索引重复"},
+    {"Too many ESI dictionary objects","ESI 字典对象数量超出上限"},
     {"Process mapping invalid; scan again.","过程映射已失效，请重新扫描。"},
     {"PDO description time budget exceeded.","PDO 描述读取已超时。"},
     {"Online SoE signal descriptions are not available.","在线 SoE 信号描述暂不可用。"},
@@ -358,6 +369,10 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"PDO SyncManager","PDO SyncManager"},{"entry index","条目索引"},{"entry subindex","条目子索引"},
     {"entry bit length","条目位宽"},{"name language","名称语言"},{"type bit size","类型位宽"},
     {"object index","对象索引"},{"dictionary subindex","字典子索引"},
+    {"dictionary type bit size","字典类型位宽"},{"dictionary scalar width","字典标量位宽"},
+    {"dictionary string length","字典字符串长度"},{"dictionary index","字典对象索引"},
+    {"dictionary array bound","字典数组起始索引"},{"dictionary array length","字典数组长度"},
+    {"dictionary array bit size","字典数组位宽"},{"dictionary entry bit size","字典条目位宽"},
 };
 inline std::string withoutPeriod(std::string value) {
     if(!value.empty()&&value.back()=='.')value.pop_back();
@@ -389,6 +404,19 @@ inline std::string translateToolMessage(const std::string& message) {
     const std::string missingBootstrap=" has no valid bootstrap mailbox; BOOT was not requested.";
     if(message.rfind("Slave ",0)==0&&message.size()>missingBootstrap.size()&&message.compare(message.size()-missingBootstrap.size(),missingBootstrap.size(),missingBootstrap)==0)
         return "从站 "+message.substr(6,message.size()-missingBootstrap.size()-6)+" 没有有效的 Bootstrap Mailbox，未执行 BOOT 切换。";
+    const std::string unavailableCoE=": CoE descriptions unavailable for ",objectCountSuffix=" mapped object(s).";
+    if(message.rfind("Slave ",0)==0) {
+        const auto split=message.find(unavailableCoE,6);
+        if(split!=std::string::npos) {
+            const auto start=split+unavailableCoE.size(),suffix=message.find(objectCountSuffix,start);
+            if(suffix!=std::string::npos) {
+                auto result="从站 "+message.substr(6,split-6)+" 有 "+message.substr(start,suffix-start)+" 个映射对象未能读取 CoE 描述。";
+                const auto next=suffix+objectCountSuffix.size();
+                if(next<message.size()&&message[next]==' ')result+=translateToolMessage(message.substr(next+1));
+                return result;
+            }
+        }
+    }
     for(const auto* prefix:{"Online SDO dictionary complete: ","Online SDO dictionary incomplete: "}) {
         const std::string start=prefix;if(message.rfind(start,0)!=0)continue;
         const auto objectsEnd=message.find(" objects, ",start.size());

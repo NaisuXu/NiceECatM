@@ -24,6 +24,9 @@ public:
     virtual Result readSdo(int slave, uint16_t index, uint8_t sub, int capacity)=0;
     virtual Result writeSdo(int slave, uint16_t index, uint8_t sub, const std::vector<uint8_t>&)=0;
     virtual Result readSdoDictionary(int) {return {false,"Online SDO dictionary discovery is unavailable.",{}};}
+    // Each idle service call may query one PDO object's description.
+    virtual bool hasPendingPdoDescriptions() const {return false;}
+    virtual bool servicePdoDescriptions() {return false;}
     virtual Result writeOutput(int slave, int offset, const std::vector<uint8_t>&)=0;
     virtual void cycle()=0;
     virtual void close()=0;

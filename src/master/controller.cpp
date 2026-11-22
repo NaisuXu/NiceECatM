@@ -179,9 +179,7 @@ struct Controller::Impl {
         current.connection.mode=mode;current.simulation=mode==ConnectionMode::Simulation;
         current.eeprom=eeprom;
         current.foe=foe;
-        // ESI matching is static until scan/import/invalidation. Do it while
-        // stopped, then only copy the resulting metadata into live snapshots.
-        // A cyclic publication must not search a potentially large XML catalog.
+        // Cache the decorated layout between scans and idle description updates.
         if(mode==ConnectionMode::Programming) {
             descriptions.clear();library={};
             current.esiDirectory.clear();current.esiStatus.clear();current.esiFiles=current.esiDevices=0;
@@ -429,6 +427,9 @@ struct Controller::Impl {
         lastCompleted=queued.id;log(lastResult);
         const bool wasRunning=current.running;
         publish();
+        if(lastResult.ok&&queued.command.kind==CommandKind::Scan&&mode==ConnectionMode::Hardware) {
+            for(auto& message:esi.scanDiagnostics(current))appendLog(std::move(message),false);
+        }
         if(!current.running) {previousCycle={};nextCycle={};}
         else if(!wasRunning||nextCycle==Clock::time_point{})nextCycle=Clock::now();
         // Publish the backend state before making the result visible to
@@ -474,16 +475,22 @@ struct Controller::Impl {
         try {
             backend=makeSoem();log(backend->adapters());log({true,"I/O worker ready. Hardware traffic begins only after selecting an interface and scanning.",{}});publish();
             while(true) {
-                Queued queued{};bool haveCommand=false,cycleDue=false;
+                Queued queued{};bool haveCommand=false,cycleDue=false,readDescription=false;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
-                    auto canWake=[this]{return quitting||!urgent.empty()||!normal.empty();};
-                    if(!current.running)ready.wait(lock,canWake);
+                    auto canReadDescription=[this]{
+                        return mode==ConnectionMode::Hardware&&current.connected&&current.mapped&&
+                            !scriptRunning.load()&&backend->hasPendingPdoDescriptions();
+                    };
+                    if(!current.running)ready.wait(lock,[&]{
+                        return quitting||!urgent.empty()||!normal.empty()||canReadDescription();
+                    });
                     else if(urgent.empty()&&normal.empty())waitForCycle(lock);
                     if(quitting)break;
                     cycleDue=current.running&&Clock::now()>=nextCycle;
                     if(!urgent.empty()) {queued=std::move(urgent.front());urgent.pop_front();haveCommand=true;}
                     else if(!cycleDue&&!normal.empty()) {queued=std::move(normal.front());normal.pop_front();haveCommand=true;}
+                    else if(!current.running)readDescription=canReadDescription();
                     if(haveCommand) {
                         activeRequest=queued.id;cancelActive.store(false);
                         activeEeprom=queued.command.kind==CommandKind::ReadEeprom||queued.command.kind==CommandKind::WriteEeprom||
@@ -492,7 +499,12 @@ struct Controller::Impl {
                         activeBoot=entersBoot(queued.command);
                     }
                 }
-                if(haveCommand)execute(std::move(queued));else if(cycleDue)exchange();
+                if(haveCommand)execute(std::move(queued));
+                else if(cycleDue)exchange();
+                else if(readDescription) {
+                    if(backend->servicePdoDescriptions())descriptionDirty=true;
+                    if(!backend->hasPendingPdoDescriptions()||(descriptionDirty&&Clock::now()>=nextPublication))publish();
+                }
             }
             if(current.running)backend->stop();
             backend->close();
@@ -536,7 +548,9 @@ void Controller::enableScriptSnapshots(bool enabled) { impl_->scriptSnapshots.st
 bool Controller::setScriptRunning(bool running) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if(running&&(impl_->activeFoe||impl_->activeBoot))return false;
-    impl_->scriptRunning.store(running);return true;
+    impl_->scriptRunning.store(running);
+    if(!running)impl_->ready.notify_one();
+    return true;
 }
 Snapshot Controller::scriptSnapshot() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->scriptSnapshots.load(std::memory_order_relaxed)?impl_->scriptPublished:impl_->published;}
 void Controller::appendLog(std::string message,bool error) { impl_->appendLog(std::move(message),error); }

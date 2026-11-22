@@ -14,6 +14,7 @@ public:
     explicit EsiCatalog(std::filesystem::path directory);
     Result reload();
     void decorate(Snapshot&) const;
+    std::vector<std::string> scanDiagnostics(const Snapshot& decorated) const;
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

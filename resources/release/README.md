@@ -38,7 +38,7 @@ The target cycle defaults to **10 ms**; options are **500 us, 1, 2, 5, 10, 20, 5
 
 **Disconnect before changing** Simulation / Hardware / Programming mode, interfaces, redundancy or mapping mode. Stop scripts before changing modes. Dual-port redundancy connects two interfaces to opposite ends of the **same slave chain**. Normal/overlapped mapping is independent of port count.
 
-For signal descriptions, put matching manufacturer ESI XML files in `esi/`, restart and scan again. English-only device names remain English in the Chinese UI.
+For signal descriptions, put matching manufacturer ESI XML files in the `esi/` directory beside the executable, restart and scan again. If a description does not match, the log shows the directory and reason. English-only device names remain English in the Chinese UI.
 
 ## FoE file transfer
 

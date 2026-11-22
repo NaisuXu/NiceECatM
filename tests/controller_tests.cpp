@@ -27,6 +27,7 @@ bool entered=false,released=false;
 std::atomic<bool> staleHealth{false};
 std::atomic<uint64_t> observedCycles{0};
 std::atomic<int> pendingDiagnostic{0};
+std::atomic<unsigned> descriptionReads{0};
 int checks=0;
 void check(bool value,const char* message) {++checks;if(!value)throw std::runtime_error(message);}
 bool waitFor(const std::function<bool()>& condition) {
@@ -40,9 +41,21 @@ bool waitFor(const std::function<bool()>& condition) {
 namespace niceecatm {
 class BlockingBackend final:public Backend {
     std::unique_ptr<Backend> simulation_=makeSimulation();
+    unsigned scanNumber_=0;
+    bool descriptionPending_=false;
 public:
     Result adapters() override {return simulation_->adapters();}
-    Result scan(const Connection& c) override {return simulation_->scan(c);}
+    Result scan(const Connection& c) override {
+        auto result=simulation_->scan(c);
+        if(result.ok)++scanNumber_;
+        descriptionPending_=result.ok;
+        return result;
+    }
+    bool hasPendingPdoDescriptions() const override {return descriptionPending_;}
+    bool servicePdoDescriptions() override {
+        if(!descriptionPending_)return false;
+        descriptionPending_=false;++descriptionReads;return true;
+    }
     Result state(int slave,AlState s) override {return simulation_->state(slave,s);}
     Result setCycle(int cycleUs) override {return simulation_->setCycle(cycleUs);}
     Result start() override {return simulation_->start();}
@@ -58,8 +71,17 @@ public:
     Result readSdoDictionary(int slave) override {return simulation_->readSdoDictionary(slave);}
     Result writeOutput(int slave,int offset,const std::vector<uint8_t>& b) override {return simulation_->writeOutput(slave,offset,b);}
     void cycle() override {simulation_->cycle();++observedCycles;}
-    void close() override {simulation_->close();}
-    Snapshot snapshot() const override {auto s=simulation_->snapshot();s.simulation=false;if(staleHealth.load())s.status="Working counter failed: inputs stale";return s;}
+    void close() override {descriptionPending_=false;simulation_->close();}
+    Snapshot snapshot() const override {
+        auto s=simulation_->snapshot();s.simulation=false;
+        if(staleHealth.load())s.status="Working counter failed: inputs stale";
+        if(s.connected) {
+            auto& names=s.slaves.back().pdoEntries.back().names;
+            names.clear();
+            if(!descriptionPending_)names={{0,"Discovered on scan "+std::to_string(scanNumber_)}};
+        }
+        return s;
+    }
     std::vector<Result> takeDiagnostics() override {
         const int notice=pendingDiagnostic.exchange(0);
         if(notice==1)return {{false,"AL test: status read failed",{}}};
@@ -108,7 +130,23 @@ int main() {
         Command hardware;hardware.kind=CommandKind::SetMode;hardware.connection.mode=ConnectionMode::Hardware;
         const auto beforeMode=view.generation;view=send(hardware);
         check(!view.connected&&view.slaves.empty()&&view.generation>beforeMode,"Mode changes clear prior devices and advance generation");
+        auto discoveredName=[](const Snapshot& s){return pdoEntryName(s.slaves.back().pdoEntries.back(),false);};
+        check(controller.setScriptRunning(true),"Script acquires bus for its scan");
         scan.connection.mode=ConnectionMode::Hardware;view=send(scan);check(view.result.ok&&view.connected,"Test backend scan");
+        check(discoveredName(view).empty()&&descriptionReads==0,"Script can inspect layout before optional mailbox reads");
+        controller.setScriptRunning(false);
+        check(waitFor([&]{return discoveredName(controller.snapshot())=="Discovered on scan 1";}),"Idle worker publishes newly discovered name to GUI");
+        check(discoveredName(controller.scriptSnapshot())=="Discovered on scan 1"&&controller.snapshot().generation==view.generation,
+              "Metadata update reaches script snapshot in the same connection generation");
+
+        check(controller.setScriptRunning(true),"Hold optional mailbox reads across rescan");
+        view=send(scan);check(view.result.ok&&discoveredName(view).empty(),"Rescan clears previous description even with identical PDO mapping");
+        state.state=AlState::Op;view=send(state);check(view.result.ok&&view.running,"Start cyclic exchange with descriptions pending");
+        controller.setScriptRunning(false);
+        check(waitFor([&]{return controller.snapshot().cycles>=3;}),"Cyclic exchange continues while descriptions are pending");
+        check(descriptionReads==1&&discoveredName(controller.snapshot()).empty(),"No optional mailbox accesses during cyclic I/O");
+        state.state=AlState::PreOp;view=send(state);check(view.result.ok,"Return to stopped PRE-OP");
+        check(waitFor([&]{return discoveredName(controller.snapshot())=="Discovered on scan 2";}),"Returning to PRE-OP resumes and publishes descriptions for new scan");
         cycle.connection.cycleUs=100000;view=send(cycle);
         observedCycles=0;state.state=AlState::Op;view=send(state);
         check(waitFor([]{return observedCycles.load()>0;}),"Long-period exchange starts");

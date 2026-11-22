@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "esi/catalog.hpp"
+#include "ui/messages.hpp"
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +15,9 @@ namespace {
 namespace fs=std::filesystem;
 int checks=0;
 void check(bool value,const char* message){++checks;if(!value)throw std::runtime_error(message);}
+bool logContains(const std::vector<std::string>& lines,const std::string& text) {
+    return std::any_of(lines.begin(),lines.end(),[&](const std::string& line){return line.find(text)!=std::string::npos;});
+}
 struct Temporary {
     fs::path directory=fs::temp_directory_path()/fs::u8path("NiceECatM-esi-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     Temporary(){fs::create_directories(directory);}
@@ -43,6 +48,9 @@ int main() {
     try {
         Temporary temp;const auto library=temp.directory/fs::u8path(u8"描述库");EsiCatalog catalog(library);Snapshot view;
         catalog.decorate(view);check(view.esiFiles==0&&view.esiDevices==0&&!fs::exists(library),"Empty library does not create a folder");
+        auto absent=snapshot({},8,0);catalog.decorate(absent);
+        const auto missingLogs=catalog.scanDiagnostics(absent);
+        check(logContains(missingLogs,"ESI directory does not exist | "+library.u8string())&&logContains(missingLogs,"ProductCode=0x00010200"),"Missing library reports the searched directory and hardware identity");
         const auto source=library/fs::u8path(u8"信号.xml");
         const auto labels="<Name LcId=\"1033\">Setpoint &amp; limit</Name><Name LcId=\"2052\">速度设定</Name>";
         const auto fields=entry("#x7000",1,3,labels,"UINT3")+entry("0",0,1,"","")+entry("#x7000",2,12,"<Name>Position</Name>","UINT12");
@@ -51,6 +59,7 @@ int main() {
         auto s=snapshot({online(false,0,3,0x1600,0x7000,1,2),online(false,3,1,0x1600,0,0,2),online(false,4,12,0x1600,0x7000,2,2)},0,16);
         catalog.decorate(s);
         check(s.esiFiles==1&&s.esiDevices==1&&s.slaves[0].esiStatus=="ESI matched","Exact identity and online layout matched");
+        check(catalog.scanDiagnostics(s).empty(),"Successful ESI matches produce no diagnostic log");
         check(s.slaves[0].esiFile==source.u8string(),"Matched metadata retains the actual source file path");
         check(pdoEntryName(s.slaves[0].pdoEntries[0],false)=="Setpoint & limit"&&pdoEntryName(s.slaves[0].pdoEntries[0],true)==u8"速度设定","ESI entities and localized names decoded");
         check(s.slaves[0].pdoEntries[0].type=="UINT3"&&s.slaves[0].pdoEntries[2].type=="UINT12","Nonbyte integer types resolved from ESI");
@@ -66,6 +75,15 @@ int main() {
         check(unknown.slaves[0].pdoEntries.empty()&&unknown.slaves[0].esiStatus=="ESI matched; online layout unavailable","ESI never invents unverified offsets");
         auto wrongRevision=fresh;wrongRevision.slaves[0].revision=2;catalog.decorate(wrongRevision);
         check(wrongRevision.slaves[0].esiFile.empty()&&wrongRevision.slaves[0].esiStatus=="ESI revision mismatch","Revision mismatch never chooses newest description");
+        wrongRevision.slaves[0].name=u8"设备 A";
+        const auto revisionLogs=catalog.scanDiagnostics(wrongRevision);
+        check(revisionLogs.size()==2&&logContains(revisionLogs,"RevisionNo=0x00000002")&&logContains(revisionLogs,source.filename().u8string()+" (RevisionNo=0x00000001)"),"Revision mismatch identifies the live revision and candidate XML revision");
+        check(detail::translateToolMessage(revisionLogs[0])==u8"ESI XML 搜索目录 | "+library.u8string()&&detail::translateToolMessage(revisionLogs[1]).find(u8"ESI 修订号不匹配 | #1 设备 A")!=std::string::npos,"Chinese diagnostics preserve Unicode directories and device names");
+        check(detail::translateToolMessage("Slave 12: CoE descriptions unavailable for 108 mapped object(s).")=="从站 12 有 108 个映射对象未能读取 CoE 描述。","Chinese CoE log retains arbitrary slave and object counts");
+        check(detail::translateToolMessage("Slave 1: CoE descriptions unavailable for 3 mapped object(s). Stopped after three consecutive SDO Information request failures.")=="从站 1 有 3 个映射对象未能读取 CoE 描述。连续三次 SDO Information 请求失败，已停止查询描述。","Chinese CoE log includes the optional cause");
+        auto repeatedMismatch=wrongRevision;repeatedMismatch.slaves.resize(32,wrongRevision.slaves[0]);
+        const auto limited=catalog.scanDiagnostics(repeatedMismatch);
+        check(limited.size()==10&&limited.back()=="Additional slaves with ESI diagnostics | 24","Large topologies have bounded ESI diagnostics");
         auto gap=snapshot({online(false,1,3,0x1600,0x7000,1),online(false,4,12,0x1600,0x7000,2)},0,16);catalog.decorate(gap);
         check(gap.slaves[0].pdoEntries[0].names.empty(),"Incomplete actual layout cannot bind ESI");
         auto overrun=snapshot({online(false,0,17,0x1600,0x7000,1)},0,16);catalog.decorate(overrun);
@@ -73,6 +91,7 @@ int main() {
         auto noEsi=snapshot({online(false,0,16,0x1600,0x7000,1)},0,16);noEsi.slaves[0].vendor=0x1234;
         noEsi.slaves[0].pdoEntries[0].type="INT16";noEsi.slaves[0].pdoEntries[0].names={{0,"Trusted online name"}};catalog.decorate(noEsi);
         check(noEsi.slaves[0].pdoEntries[0].type=="INT16"&&pdoEntryName(noEsi.slaves[0].pdoEntries[0],true)=="Trusted online name","Missing ESI preserves trusted online type and name");
+        check(logContains(catalog.scanDiagnostics(noEsi),"No matching ESI description | #1")&&logContains(catalog.scanDiagnostics(noEsi),"VendorId=0x00001234"),"Unmatched vendor includes the connected hardware identity");
 
         const auto dynamicLib=temp.directory/"dynamic";EsiCatalog dynamic(dynamicLib);
         const auto dynamicSource=dynamicLib/"dynamic.xml";
@@ -87,6 +106,8 @@ int main() {
         auto conflicting=snapshot({online(true,0,32,0x1a01,0x6010,1,3),online(true,32,16,0x1a00,0x6000,1,3)},48,0);
         conflicting.slaves[0].pdoEntries[0].type="UINT32";conflicting.slaves[0].pdoEntries[0].names={{0,"Online value"}};dynamic.decorate(conflicting);
         check(conflicting.slaves[0].pdoEntries[0].type=="UINT32"&&pdoEntryName(conflicting.slaves[0].pdoEntries[0],false)=="Online value","Conflicting ESI type never overrides online metadata");
+        const auto partialLogs=dynamic.scanDiagnostics(conflicting);
+        check(logContains(partialLogs,"ESI matched; partial PDO description")&&logContains(partialLogs,"dynamic.xml"),"Partially bound online layouts identify the matching XML");
         const auto duplicateEntries=temp.directory/"entry-conflict"/"entry-conflict.xml";EsiCatalog entryConflict(duplicateEntries.parent_path());
         write(duplicateEntries,document(pdo("RxPdo","#x1600",entry("#x7000",1,16,"<Name>Choice A</Name>")+entry("#x7000",1,16,"<Name>Choice B</Name>"))));
         check(entryConflict.reload().ok,"Ambiguous entry description can still be inspected as a library file");
@@ -174,6 +195,9 @@ int main() {
         EsiCatalog invalidCatalog(invalidLib);check(!invalidCatalog.reload().ok,"Malformed library file reports a load failure");
         Snapshot partiallyValid;invalidCatalog.decorate(partiallyValid);
         check(partiallyValid.esiFiles==1&&partiallyValid.esiDevices==1,"A malformed file does not hide valid descriptions in the same library");
+        auto invalidView=snapshot({},0,0);invalidCatalog.decorate(invalidView);
+        const auto invalidLogs=invalidCatalog.scanDiagnostics(invalidView);
+        check(logContains(invalidLogs,"Malformed ESI XML")&&logContains(invalidLogs,"invalid.xml")&&logContains(invalidLogs,invalidLib.u8string()),"Malformed XML produces a file-specific load diagnostic alongside valid devices");
         for(const auto& data:std::vector<std::string>{document(pdo("RxPdo","#x1600",entry("#x10000",1,16,""))),document(pdo("RxPdo","#x1600",entry("#x7000",256,16,""))),document(pdo("RxPdo","#x1600",entry("#x7000",1,0,""))),document(pdo("RxPdo","#x1600",entry("#x7000",1,524289,""))),document("","4294967296"),"<!DOCTYPE EtherCATInfo SYSTEM 'file:///never-read'>"+document(""),document("")+"<extra/>"}) {
             write(invalid,data);check(!invalidCatalog.reload().ok,"Malformed identity, unsafe widths and external declarations rejected");
         }
@@ -183,6 +207,8 @@ int main() {
         check(catalog.reload().ok,"Conflicting identity is retained for explicit ambiguity reporting");
         auto ambiguous=fresh;catalog.decorate(ambiguous);
         check(ambiguous.slaves[0].esiStatus=="Ambiguous ESI device identity"&&ambiguous.esiFiles==2,"Conflicting identities do not silently override earlier description");
+        const auto ambiguousLogs=catalog.scanDiagnostics(ambiguous);
+        check(logContains(ambiguousLogs,"conflict.xml")&&logContains(ambiguousLogs,source.filename().u8string()),"Conflicting descriptions list both XML files");
         const auto duplicate=library/"duplicate.xml";write(duplicate,document(pdo("RxPdo","#x1600",fields)));
         check(restarted.reload().ok,"Equivalent description under another filename loads");
         auto dedup=fresh;restarted.decorate(dedup);check(dedup.esiDevices==2,"Equivalent metadata is deduplicated while conflicting identity remains distinct");
@@ -196,6 +222,7 @@ int main() {
         fs::remove(latin);EsiCatalog removedFile(latin.parent_path());
         auto withoutFile=snapshot({online(false,0,8,0x1600,0x7000,1)},0,8);removedFile.decorate(withoutFile);
         check(withoutFile.esiFiles==0&&withoutFile.slaves[0].esiFile.empty()&&withoutFile.slaves[0].pdoEntries[0].names.empty(),"Removing an ESI file leaves no persisted metadata in a new instance");
+        check(logContains(removedFile.scanDiagnostics(withoutFile),"No XML files in the ESI directory | "+latin.parent_path().u8string()),"Empty directory has a different diagnostic from a missing directory");
 
 #ifdef NICEECATM_SOURCE_DIR
         const fs::path sourceRoot=NICEECATM_SOURCE_DIR;EsiCatalog hardware(sourceRoot/"resources"/"esi");

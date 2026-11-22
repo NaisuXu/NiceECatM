@@ -8,8 +8,10 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <tuple>
 
@@ -112,7 +114,8 @@ std::string xmlUtf8(const std::string& bytes) {
 }
 std::string readFile(const fs::path& path) {
     std::error_code ec;const auto size=fs::file_size(path,ec);
-    if(ec||size==0||size>MaxFileBytes)throw std::runtime_error("ESI file must contain 1 byte to 32 MiB: "+path.filename().u8string());
+    if(ec)throw std::runtime_error("Cannot read ESI file: "+path.filename().u8string());
+    if(size==0||size>MaxFileBytes)throw std::runtime_error("ESI file must contain 1 byte to 32 MiB: "+path.filename().u8string());
     std::ifstream stream(path,std::ios::binary);if(!stream)throw std::runtime_error("Cannot read ESI file: "+path.filename().u8string());
     std::string data(static_cast<size_t>(size),'\0');stream.read(data.data(),static_cast<std::streamsize>(size));
     if(!stream||stream.peek()!=std::char_traits<char>::eof())throw std::runtime_error("ESI file changed while reading: "+path.filename().u8string());
@@ -363,6 +366,11 @@ bool sameBinding(const PdoEntry& online,const PdoEntry& esi) {
         (online.pdoIndex==0||online.pdoIndex==esi.pdoIndex)&&
         (online.syncManager<0||esi.syncManager<0||online.syncManager==esi.syncManager);
 }
+std::string hexId(uint32_t value) {
+    std::ostringstream out;
+    out<<"0x"<<std::uppercase<<std::hex<<std::setw(8)<<std::setfill('0')<<value;
+    return out.str();
+}
 }
 
 struct EsiCatalog::Impl {
@@ -371,15 +379,19 @@ struct EsiCatalog::Impl {
     size_t files=0;
     uint64_t revision=0;
     std::string status;
+    std::vector<std::string> loadIssues;
+    bool directoryExists=false;
     explicit Impl(fs::path path):directory(std::move(path)){}
 };
 EsiCatalog::EsiCatalog(fs::path directory):impl_(std::make_shared<Impl>(std::move(directory))){reload();}
 Result EsiCatalog::reload() {
     ++impl_->revision;impl_->devices.clear();impl_->files=0;
-    std::vector<std::string> failures;std::vector<fs::path> paths;
+    auto& failures=impl_->loadIssues;failures.clear();
+    std::vector<fs::path> paths;
     try {
         std::error_code ec;
-        if(fs::exists(impl_->directory,ec)) {
+        impl_->directoryExists=fs::exists(impl_->directory,ec);
+        if(impl_->directoryExists) {
             if(!fs::is_directory(impl_->directory))throw std::runtime_error("ESI library path is not a directory");
             for(const auto& item:fs::directory_iterator(impl_->directory))if(item.is_regular_file()&&lower(item.path().extension().u8string())==".xml") {
                 if(paths.size()>=MaxFiles)throw std::runtime_error("ESI library exceeds 1024 XML files");
@@ -397,7 +409,8 @@ Result EsiCatalog::reload() {
             }
             ++impl_->files;
         }catch(const std::exception& e){if(failures.size()<8)failures.push_back(path.filename().u8string()+": "+e.what());}
-    }catch(const std::exception& e){failures.push_back(e.what());}
+    }catch(const fs::filesystem_error&){failures.push_back("Cannot access ESI library directory");}
+    catch(const std::exception& e){failures.push_back(e.what());}
     impl_->status="ESI library: "+std::to_string(impl_->files)+" file(s), "+std::to_string(impl_->devices.size())+" device description(s)";
     for(const auto& failure:failures)impl_->status+="; "+failure;
     return {failures.empty(),impl_->status,{}};
@@ -446,5 +459,36 @@ void EsiCatalog::decorate(Snapshot& view) const {
         else if(missing)slave.esiStatus=matched?"ESI matched; partial PDO description":"ESI matched; PDO entries differ";
         else slave.esiStatus="ESI matched";
     }
+}
+std::vector<std::string> EsiCatalog::scanDiagnostics(const Snapshot& decorated) const {
+    if(decorated.simulation||decorated.slaves.empty())return {};
+    std::vector<std::string> messages;
+    size_t affected=0;
+    for(const auto& slave:decorated.slaves) {
+        if(slave.esiStatus.empty()||slave.esiStatus=="ESI matched")continue;
+        if(++affected>8)continue;
+        auto line=slave.esiStatus+" | #"+std::to_string(slave.position)+" "+slave.name+
+            "  VendorId="+hexId(slave.vendor)+"  ProductCode="+hexId(slave.product)+"  RevisionNo="+hexId(slave.revision);
+        if(!slave.esiFile.empty())line+="  XML: "+fs::u8path(slave.esiFile).filename().u8string();
+        if(slave.esiStatus=="ESI revision mismatch"||slave.esiStatus=="Ambiguous ESI device identity") {
+            size_t candidates=0;
+            for(const auto& device:impl_->devices) {
+                if(device.vendor!=slave.vendor||device.product!=slave.product)continue;
+                if(slave.esiStatus=="Ambiguous ESI device identity"&&device.revision!=slave.revision)continue;
+                if(candidates==3){line+=" …";break;}
+                line+=(candidates++?", ":"  XML: ")+fs::u8path(device.file).filename().u8string()+
+                    " (RevisionNo="+hexId(device.revision)+")";
+            }
+        }
+        messages.push_back(std::move(line));
+    }
+    if(affected>8)messages.push_back("Additional slaves with ESI diagnostics | "+std::to_string(affected-8));
+    if(messages.empty()&&impl_->loadIssues.empty())return {};
+    std::string directoryReason="ESI XML directory";
+    if(impl_->files==0&&impl_->loadIssues.empty())
+        directoryReason=impl_->directoryExists?"No XML files in the ESI directory":"ESI directory does not exist";
+    messages.insert(messages.begin(),directoryReason+" | "+impl_->directory.u8string());
+    messages.insert(messages.end(),impl_->loadIssues.begin(),impl_->loadIssues.end());
+    return messages;
 }
 }
