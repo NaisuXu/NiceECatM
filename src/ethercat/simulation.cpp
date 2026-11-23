@@ -3,6 +3,7 @@
 
 #include "ethercat/backend.hpp"
 #include "ethercat/foe_job.hpp"
+#include "ethercat/trend_accumulator.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -21,6 +22,7 @@ class Simulation final : public Backend {
     std::map<int,std::array<uint8_t,4096>> registers_;
     std::map<std::string,std::vector<uint8_t>> files_;
     uint16_t gain_=1000;
+    TrendAccumulator trends_;
     Result success(std::string message,std::vector<uint8_t> data={}) {view_.status=message;return {true,std::move(message),std::move(data)};}
     Result failure(std::string message) {view_.status=message;return {false,std::move(message),{}};}
     Slave* find(int position) {
@@ -130,15 +132,20 @@ public:
             registers_[s.position][0x120]=uint8_t(s.requested);registers_[s.position][0x130]=uint8_t(s.state);
         }
         if(requested==AlState::Boot)view_.mapped=false;
-        if(requested==AlState::SafeOp||requested==AlState::Op)view_.running=true;
+        if(requested==AlState::SafeOp||requested==AlState::Op) {
+            if(!view_.running)trends_.pause();
+            view_.running=true;
+        }
         return success(std::string("Simulated AL state confirmed: ")+stateName(static_cast<uint16_t>(requested))+".");
     }
     Result start() override {
         if(!view_.connected||!view_.mapped)return failure("Scan and map devices first.");
         if(!std::all_of(view_.slaves.begin(),view_.slaves.end(),[](const Slave& s){return (s.state&15)==4||(s.state&15)==8;}))return failure("All slaves must be SAFE-OP or OP before cyclic exchange.");
+        trends_.pause();
         view_.running=true;return success("Simulated cyclic exchange started.");
     }
     Result stop() override {
+        trends_.pause();
         view_.running=false;view_.wkc=0;
         for(auto& s:view_.slaves)if((s.state&15)==8) {
             s.state=s.requested=4;registers_[s.position][0x120]=registers_[s.position][0x130]=4;
@@ -308,9 +315,15 @@ public:
             s->inputs[1]=uint8_t(voltage);s->inputs[2]=uint8_t(voltage>>8);
         }
     }
+    void sampleTrend() override {
+        trends_.observe(view_.slaves,view_.connection.cycleUs,view_.wkc>=view_.expectedWkc);
+    }
+    TrendHistory trendHistory() const override {return trends_.history();}
+    void clearTrend() override {trends_.clear();}
     void close() override {
         view_.connected=false;view_.mapped=false;view_.running=false;view_.slaves.clear();view_.wkc=0;view_.expectedWkc=0;registers_.clear();
         view_.foe={};view_.status="Disconnected";
+        clearTrend();
     }
     Snapshot snapshot() const override {return view_;}
 };

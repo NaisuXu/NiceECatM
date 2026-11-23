@@ -15,6 +15,7 @@
 #include "ethercat/bootstrap_session.hpp"
 #include "ethercat/pdo_layout.hpp"
 #include "ethercat/pdo_description_queue.hpp"
+#include "ethercat/trend_accumulator.hpp"
 #include "platform/pcap_runtime.h"
 #include <algorithm>
 #include <chrono>
@@ -142,6 +143,7 @@ class SoemBackend final: public Backend {
     std::vector<uint16_t> requested_;
     CyclicStatePoll stateMonitor_;
     std::vector<Result> diagnostics_;
+    TrendAccumulator trends_;
     std::map<int,PdoDescriptionQueue> pdoDescriptions_;
     std::unique_ptr<ec_ODlistt> pdoObjects_;
     std::unique_ptr<ec_OElistt> pdoObjectEntries_;
@@ -444,6 +446,7 @@ class SoemBackend final: public Backend {
     }
     void invalidateMapping() {
         view_.mapped=false;
+        trends_.clear();
         pdoDescriptions_.clear();
         for(auto& slave:view_.slaves) {
             slave.inputLayoutKnown=slave.outputLayoutKnown=false;slave.pdoEntries.clear();
@@ -1036,7 +1039,10 @@ public:
         }
         if(ok)ok=applyState(slave,requested,requested>=4 || view_.running);
         ecx_readstate(context_.get());updateSlaves(view_.wkc>=view_.expectedWkc);
-        if(requested>=4 && (ok || hasOp())) {view_.running=true;previousCycle_={};invalidSince_={};invalidCycles_=0;}
+        if(requested>=4 && (ok || hasOp())) {
+            if(!view_.running)trends_.pause();
+            view_.running=true;previousCycle_={};invalidSince_={};invalidCycles_=0;
+        }
         if(!ok)return error(errors(stateFailure(slave)));
         return done(std::string("Confirmed ")+stateName(requested)+" for "+(slave?"slave "+std::to_string(slave):"all slaves"));
     }
@@ -1046,10 +1052,12 @@ public:
         stateMonitor_.reset();statePoll_=Clock::now();
         ecx_readstate(context_.get());updateSlaves();
         for(const auto& slave:view_.slaves)if(slave.state!=4 && slave.state!=8)return error("All slaves must be SAFE-OP or OP before starting cyclic exchange");
+        trends_.pause();
         view_.running=true;previousCycle_={};invalidSince_={};invalidCycles_=0;
         return done("Cyclic exchange started; actual AL states remain independent");
     }
     Result stop() override {
+        trends_.pause();
         if(view_.connection.mode==ConnectionMode::Programming)return done("Programming mode has no cyclic exchange.");
         if(!view_.connected)return done("Cyclic exchange stopped");
         stateMonitor_.reset();
@@ -1236,6 +1244,12 @@ public:
         if(!pending->second.pending())pdoDescriptions_.erase(pending);
         return changed;
     }
+    void sampleTrend() override {
+        const bool valid=view_.expectedWkc?view_.wkc>=view_.expectedWkc:view_.wkc>=0;
+        trends_.observe(view_.slaves,view_.connection.cycleUs,valid);
+    }
+    TrendHistory trendHistory() const override {return trends_.history();}
+    void clearTrend() override {trends_.clear();}
     void close() override {
         // Destructor/disconnect does not send any unrequested output value. If
         // OP is active, request SAFE-OP before closing the raw interfaces.
@@ -1261,6 +1275,7 @@ public:
         stateMonitor_.reset();statePoll_={};diagnostics_.clear();
         view_.connected=false;view_.mapped=false;view_.running=false;view_.slaves.clear();view_.wkc=0;view_.expectedWkc=0;invalidSince_={};invalidCycles_=0;
         view_.status="Disconnected";
+        clearTrend();
     }
     Snapshot snapshot() const override {return view_;}
     std::vector<Result> takeDiagnostics() override {std::vector<Result> result;result.swap(diagnostics_);return result;}

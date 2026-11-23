@@ -179,6 +179,7 @@ struct Controller::Impl {
         current.connection.mode=mode;current.simulation=mode==ConnectionMode::Simulation;
         current.eeprom=eeprom;
         current.foe=foe;
+        current.trends=backend->trendHistory();
         // Cache the decorated layout between scans and idle description updates.
         if(mode==ConnectionMode::Programming) {
             descriptions.clear();library={};
@@ -358,7 +359,7 @@ struct Controller::Impl {
             if(mode==ConnectionMode::Programming&&scriptRunning.load())return {false,"Stop the script before a programming scan.",{}};
             if(mode==ConnectionMode::Programming&&(command.connection.redundant||command.connection.overlap))return {false,"Programming requires a single interface without PDO mapping.",{}};
             ++generation;resetTiming();markBusy();
-            eeprom={};foe={};descriptionDirty=true;
+            eeprom={};foe={};descriptionDirty=true;backend->clearTrend();
             if(mode==ConnectionMode::Programming)return backend->scanProgramming(command.connection,eepromControl());
             return backend->scan(command.connection);
         case CommandKind::Disconnect:
@@ -455,6 +456,7 @@ struct Controller::Impl {
         previousCycle=started;
         try {
             backend->cycle();++cycles;
+            backend->sampleTrend();
             for(const auto& notice:backend->takeDiagnostics())log(notice);
         }
         catch(const std::exception& error) {

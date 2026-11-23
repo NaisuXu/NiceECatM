@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -134,6 +135,12 @@ struct FoeControl {
     std::function<bool()> cancelled;
     std::function<void(const FoeProgress&)> progress;
 };
+struct TrendPoint {
+    double minimum=0;
+    double maximum=0;
+    double latest=0;
+};
+using TrendHistory = std::map<std::string,std::vector<TrendPoint>>;
 struct Snapshot {
     bool simulation=false, connected=false, mapped=false, running=false, busy=false;
     Connection connection;
@@ -150,6 +157,9 @@ struct Snapshot {
     Result result;
     EepromProgress eeprom;
     FoeProgress foe;
+    // Fixed 100 ms trend buckets. Keys use slave position, direction, bit
+    // offset and width so ESI name/type changes do not invalidate history.
+    TrendHistory trends;
 };
 enum class CommandKind { RefreshAdapters, SetMode, Scan, Disconnect, State, SetCycle, Start, Stop, ReadRegister, WriteRegister, ReadSdo, WriteSdo, ReadSdoDictionary, WriteOutput, ReadEeprom, WriteEeprom, FoeUpload, FoeDownload };
 struct Command {

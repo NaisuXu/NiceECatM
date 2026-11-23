@@ -8,7 +8,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <map>
 
 namespace niceecatm::workbench {
@@ -22,16 +21,17 @@ struct Field {
     std::string name()const {return ui.chinese?chinese:english;}
     std::string key()const {return std::to_string(device->position)+(input?"/in/":"/out/")+std::to_string(bit)+"/"+std::to_string(width)+"/"+type+"/"+index+(padding?"/padding":raw?"/raw":"/field");}
 };
+std::string trendKey(const Field& field) {
+    return std::to_string(field.device->position)+(field.input?"/in/":"/out/")+std::to_string(field.bit)+"/"+std::to_string(field.width);
+}
 struct Draft {char value[160]="";bool dirty=false,hex=false;uint64_t pending=0;};
 struct PdoUi {
-    uint64_t generation=~uint64_t{},descriptionRevision=~uint64_t{},sampleCycle=~uint64_t{};
+    uint64_t generation=~uint64_t{},descriptionRevision=~uint64_t{};
     char search[160]="";
     int direction=0;
     std::string selection;
     std::map<std::string,Draft> drafts;
-    std::map<std::string,std::deque<float>> history;
 };
-constexpr size_t kTrendHistorySamples=200;
 PdoUi page;
 std::string lower(std::string value) {
     for(char& ch:value)if(static_cast<unsigned char>(ch)<128)ch=static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -150,23 +150,31 @@ void detailLine(const char* en,const char* zh,const std::string& value) {
     ImGui::PushFont(fonts.small,11);ImGui::TextColored(muted,"%s",tr(en,zh));ImGui::PopFont();
     ImGui::TextWrapped("%s",value.c_str());ImGui::Spacing();
 }
-void drawTrend(const std::string& key,bool input,const Snapshot& s,float width) {
-    const auto found=page.history.find(key);
+void drawTrend(const Field& field,const Snapshot& s,float width) {
+    const auto found=s.trends.find(trendKey(field));
     // Keep the last valid trace visible while the bus is stopped or a WKC
-    // failure makes the current snapshot stale. History is only appended
-    // from live snapshots below, so rendering it here cannot invent data or
-    // make the waveform blink during a communication fault.
-    if(found==page.history.end()||found->second.size()<2){ImGui::TextDisabled("—");return;}
+    // failure makes the current snapshot stale. The worker owns the trend
+    // buckets and publishes them with the regular snapshot.
+    if(found==s.trends.end()||found->second.size()<2){ImGui::TextDisabled("—");return;}
     const bool live=liveInput(s);
-    const auto& values=found->second;const auto bounds=std::minmax_element(values.begin(),values.end());float minimum=*bounds.first,maximum=*bounds.second;
-    if(maximum-minimum<.001f){minimum-=.5f;maximum+=.5f;}
+    const auto& values=found->second;
+    double minimum=values.front().minimum,maximum=values.front().maximum;
+    for(const auto& point:values){minimum=std::min(minimum,point.minimum);maximum=std::max(maximum,point.maximum);}
+    if(maximum-minimum<.001){minimum-=.5;maximum+=.5;}
     const auto start=ImGui::GetCursorScreenPos();const float height=25;auto* draw=ImGui::GetWindowDrawList();
-    for(size_t n=1;n<values.size();++n) {
-        const float x1=start.x+(n-1)*width/static_cast<float>(values.size()-1),x2=start.x+n*width/static_cast<float>(values.size()-1);
-        const float y1=start.y+height-(values[n-1]-minimum)/(maximum-minimum)*height,y2=start.y+height-(values[n]-minimum)/(maximum-minimum)*height;
-        draw->AddLine({x1,y1},{x2,y2},ImGui::GetColorU32(input?teal:amber),1.5f);
+    const auto y=[&](double value) {return start.y+height-static_cast<float>((value-minimum)/(maximum-minimum)*height);};
+    const auto color=ImGui::GetColorU32(field.input?teal:amber);
+    for(size_t n=0;n<values.size();++n) {
+        const float x=start.x+n*width/static_cast<float>(values.size()-1);
+        // The vertical segment preserves any transition that occurred inside
+        // the 100 ms bucket, even when the latest value matches its neighbor.
+        draw->AddLine({x,y(values[n].minimum)},{x,y(values[n].maximum)},color,2.0f);
+        if(n) {
+            const float previousX=start.x+(n-1)*width/static_cast<float>(values.size()-1);
+            draw->AddLine({previousX,y(values[n-1].latest)},{x,y(values[n].latest)},color,1.5f);
+        }
     }
-    ImGui::Dummy({width,height});if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",live?(input?tr("Actual valid input snapshots","实际有效输入快照"):tr("Sampled local output commands; not physical feedback","采样的本地输出命令；不代表物理反馈")):(input?tr("Last valid input snapshots; bus stopped or stale","最后有效输入快照；总线已停止或数据已过期"):tr("Last sampled local output commands; bus stopped or stale","最后采样的本地输出命令；总线已停止或数据已过期")));
+    ImGui::Dummy({width,height});if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",live?(field.input?tr("Actual valid input trend buckets","实际有效输入趋势区间"):tr("Sampled local output commands; not physical feedback","采样的本地输出命令；不代表物理反馈")):(field.input?tr("Last valid input trend buckets; bus stopped or stale","最后有效输入趋势区间；总线已停止或数据已过期"):tr("Last sampled local output commands; bus stopped or stale","最后采样的本地输出命令；总线已停止或数据已过期")));
 }
 void formatToggle(const Field& f,Draft& draft) {
     ImGui::BeginDisabled(f.type.compare(0,4,"REAL")==0);
@@ -225,7 +233,7 @@ void signalTable(Controller& controller,const Snapshot& s,const std::vector<Fiel
                 ImGui::SameLine(0,4);formatToggle(f,draft);ImGui::PopStyleVar();
                 ImGui::PushFont(fonts.small,10);ImGui::TextDisabled("%s %s%s%s",tr("Now","当前"),current.c_str(),f.unit.empty()?"":" ",f.unit.c_str());ImGui::PopFont();
             }
-            if(showTrend){ImGui::TableSetColumnIndex(column++);drawTrend(key,f.input,s,std::max(60.f,ImGui::GetContentRegionAvail().x));}
+            if(showTrend){ImGui::TableSetColumnIndex(column++);drawTrend(f,s,std::max(60.f,ImGui::GetContentRegionAvail().x));}
             ImGui::TableSetColumnIndex(column++);
             if(f.input||f.padding)ImGui::TextDisabled("%s",f.padding?tr("Padding","填充位"):tr("Read only","只读"));
             else {
@@ -265,19 +273,9 @@ void inspector(const Snapshot& s,const Field* field) {
 }
 } // namespace
 void bufferPage(Controller& controller,const Snapshot& s) {
-    if(page.generation!=s.generation||page.descriptionRevision!=s.descriptionRevision){page.generation=s.generation;page.descriptionRevision=s.descriptionRevision;page.sampleCycle=~uint64_t{};page.selection.clear();page.drafts.clear();page.history.clear();}
+    if(page.generation!=s.generation||page.descriptionRevision!=s.descriptionRevision){page.generation=s.generation;page.descriptionRevision=s.descriptionRevision;page.selection.clear();page.drafts.clear();}
     for(auto& entry:page.drafts)if(entry.second.pending&&s.completed==entry.second.pending){if(s.result.ok)entry.second.dirty=false;entry.second.pending=0;}
     const auto fields=fieldsFor(s);
-    if(liveInput(s)&&page.sampleCycle!=s.cycles) {
-        page.sampleCycle=s.cycles;
-        for(const auto& field:fields) {
-            const auto decoded=valueOf(field);char* end=nullptr;double value=0;
-            if(field.type=="BOOL")value=readBits(fieldBytes(field),0,1);
-            else {value=std::strtod(decoded.c_str(),&end);if(end==decoded.c_str()||*end||!std::isfinite(value))continue;}
-            const float sample=static_cast<float>(value);if(!std::isfinite(sample))continue;
-            auto& history=page.history[field.key()];history.push_back(sample);if(history.size()>kTrendHistorySamples)history.pop_front();
-        }
-    }
     std::vector<size_t> visible;const auto query=lower(page.search);
     for(size_t n=0;n<fields.size();++n) {
         const auto& field=fields[n];if(field.device->position!=ui.selected)continue;if(page.direction&&(field.input!=(page.direction==1)))continue;

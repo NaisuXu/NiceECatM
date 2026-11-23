@@ -29,6 +29,11 @@ public:
     virtual bool servicePdoDescriptions() {return false;}
     virtual Result writeOutput(int slave, int offset, const std::vector<uint8_t>&)=0;
     virtual void cycle()=0;
+    // Called by the I/O owner after each cyclic exchange. Implementations
+    // decide whether the exchange is valid before aggregating process values.
+    virtual void sampleTrend() {}
+    virtual TrendHistory trendHistory() const {return {};}
+    virtual void clearTrend() {}
     virtual void close()=0;
     virtual Snapshot snapshot() const=0;
     // Asynchronous transport notices are drained by the sole I/O owner and
