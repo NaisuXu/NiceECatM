@@ -360,7 +360,10 @@ void pumpRuntime(const Snapshot& snapshot) {
         script.pending.erase(std::remove_if(script.pending.begin(),script.pending.end(),[&](uint64_t id){return std::find(completed.begin(),completed.end(),id)!=completed.end();}),script.pending.end());
     }
     const auto view=script.runtime->snapshot();
-    script.running=view.status==script::Status::Running||view.status==script::Status::Waiting;
+    // The UI can stop a script before the runtime worker publishes its final
+    // state. Never let that stale Running/Waiting snapshot resurrect the
+    // visible running state after a manual disconnect or stop request.
+    if(script.running)script.running=view.status==script::Status::Running||view.status==script::Status::Waiting;
     // Runtime errors are retained in snapshots after execution stops. Only
     // forward new log events: editor actions clear script.error, and using
     // that mutable UI text to deduplicate snapshots replays old failures.
@@ -657,6 +660,14 @@ void scriptTick(Controller& controller,const Snapshot& snapshot) {
 }
 
 bool scriptRunning() {return script.running;}
+void stopScript(Controller& controller) {
+    if(!script.running)return;
+    cancelPendingRequests();
+    if(script.runtime)script.runtime->stop();
+    script.running=false;
+    controller.setScriptRunning(false);
+    addLog("Script stopped before disconnect");
+}
 
 void scriptPage(Controller& controller,const Snapshot& snapshot) {
     ensureInitialized(&controller);

@@ -224,7 +224,12 @@ struct Runtime::Impl {
         }
         executionInstructionCount=0;
         if(lua_pcall(L,0,LUA_MULTRET,0)!=LUA_OK) {
-            const std::string message=lua_tostring(L,-1)?lua_tostring(L,-1):"Lua runtime error";lua_pop(L,1);log(LogLevel::Error,message);finish(Status::Error,message);return;
+            const std::string message=lua_tostring(L,-1)?lua_tostring(L,-1):"Lua runtime error";lua_pop(L,1);
+            // A host request is interrupted by Runtime::stop() through the
+            // stopRequested flag. This is an expected lifecycle transition,
+            // not a script failure that should be shown as ERROR.
+            if(stopRequested.load()) {finish(Status::Stopped);return;}
+            log(LogLevel::Error,message);finish(Status::Error,message);return;
         }
         eventLoop(L);
         finish(Status::Stopped);
@@ -272,7 +277,10 @@ struct Runtime::Impl {
             const int arguments=timer.cycle?1:0;
             ++callbackCount;
             executionInstructionCount=0;
-            if(lua_pcall(L,arguments,0,0)!=LUA_OK){const std::string message=lua_tostring(L,-1)?lua_tostring(L,-1):"Timer callback failed";lua_pop(L,1);log(LogLevel::Error,message);}
+            if(lua_pcall(L,arguments,0,0)!=LUA_OK){
+                const std::string message=lua_tostring(L,-1)?lua_tostring(L,-1):"Timer callback failed";lua_pop(L,1);
+                if(!stopRequested.load())log(LogLevel::Error,message);
+            }
             // A self-cancelled one-shot has already released its reference.
             // Looking up its ID avoids releasing a new task's reused slot.
             if(!timer.repeating)cancelTimer(L,timer.id,timer.cycle);

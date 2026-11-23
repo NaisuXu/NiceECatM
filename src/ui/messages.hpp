@@ -160,6 +160,7 @@ inline const std::pair<const char*,const char*> messageTranslations[]={
     {"The selected file could not be saved completely.","所选文件未能完整保存。"},
     {"Cannot open the selected output file.","无法打开所选输出文件。"},
     {"Stopped","已停止"}, {"Running","周期交换中"}, {"Connected","已连接"},
+    {"Script: Script stopped before disconnect","脚本：断开连接前已停止脚本。"},
     {"No devices found","未发现设备"}, {"Adapter list refreshed","网卡列表已刷新"},
     {"Simulation ready","模拟器就绪"}, {"Not connected","尚未连接"},
     {"Command queue is full","命令队列已满"},

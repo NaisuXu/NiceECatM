@@ -3,6 +3,7 @@
 
 #include "script/runtime.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -129,6 +130,22 @@ int main() {
         if(!runtime.load("cancel.lua","timer.every(1000,function() end)")||!runtime.start())return 4;
         std::this_thread::sleep_for(15ms);runtime.stop();
         if(runtime.snapshot().status!=Status::Stopped)return 5;
+        ++checks;
+    }
+    {
+        // Stopping while a host request is pending is a normal lifecycle
+        // action. The interrupted await must not become a script ERROR.
+        std::atomic<bool> submitted=false;
+        HostCallbacks callbacks;
+        callbacks.submit=[&](const ScriptRequest&) {submitted=true;return uint64_t(1);};
+        Runtime runtime(callbacks,RuntimeOptions{});
+        if(!runtime.load("stop_waiting.lua","ecat.current():disconnect()")||!runtime.start())return 6;
+        const auto deadline=std::chrono::steady_clock::now()+500ms;
+        while(!submitted.load()&&std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(2ms);
+        if(!submitted.load())return 7;
+        runtime.stop();
+        const auto view=runtime.snapshot();
+        if(view.status!=Status::Stopped||hasErrors(view)||!view.error.empty())return 8;
         ++checks;
     }
     {

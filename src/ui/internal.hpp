@@ -68,5 +68,6 @@ void eepromPage(Controller&,const Snapshot&);void eepromTick(Controller&,const S
 void scriptPage(Controller&,const Snapshot&);
 void scriptTick(Controller&,const Snapshot&);
 bool scriptRunning();
+void stopScript(Controller&);
 void eventLog(Controller&,const Snapshot&,float height);void consume(const Snapshot&);
 } // namespace niceecatm::workbench
