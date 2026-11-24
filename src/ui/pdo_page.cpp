@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
+#include <vector>
 
 namespace niceecatm::workbench {
 namespace {
@@ -31,6 +33,7 @@ struct PdoUi {
     int direction=0;
     std::string selection;
     std::map<std::string,Draft> drafts;
+    std::set<std::string> monitored;
 };
 PdoUi page;
 std::string lower(std::string value) {
@@ -150,31 +153,63 @@ void detailLine(const char* en,const char* zh,const std::string& value) {
     ImGui::PushFont(fonts.small,11);ImGui::TextColored(muted,"%s",tr(en,zh));ImGui::PopFont();
     ImGui::TextWrapped("%s",value.c_str());ImGui::Spacing();
 }
-void drawTrend(const Field& field,const Snapshot& s,float width) {
-    const auto found=s.trends.find(trendKey(field));
-    // Keep the last valid trace visible while the bus is stopped or a WKC
-    // failure makes the current snapshot stale. The worker owns the trend
-    // buckets and publishes them with the regular snapshot.
-    if(found==s.trends.end()||found->second.size()<2){ImGui::TextDisabled("—");return;}
-    const bool live=liveInput(s);
-    const auto& values=found->second;
-    double minimum=values.front().minimum,maximum=values.front().maximum;
-    for(const auto& point:values){minimum=std::min(minimum,point.minimum);maximum=std::max(maximum,point.maximum);}
-    if(maximum-minimum<.001){minimum-=.5;maximum+=.5;}
-    const auto start=ImGui::GetCursorScreenPos();const float height=25;auto* draw=ImGui::GetWindowDrawList();
-    const auto y=[&](double value) {return start.y+height-static_cast<float>((value-minimum)/(maximum-minimum)*height);};
-    const auto color=ImGui::GetColorU32(field.input?teal:amber);
-    for(size_t n=0;n<values.size();++n) {
-        const float x=start.x+n*width/static_cast<float>(values.size()-1);
-        // The vertical segment preserves any transition that occurred inside
-        // the 100 ms bucket, even when the latest value matches its neighbor.
-        draw->AddLine({x,y(values[n].minimum)},{x,y(values[n].maximum)},color,2.0f);
-        if(n) {
-            const float previousX=start.x+(n-1)*width/static_cast<float>(values.size()-1);
-            draw->AddLine({previousX,y(values[n-1].latest)},{x,y(values[n].latest)},color,1.5f);
-        }
+void updateTrendSelection(Controller& controller) {
+    controller.setTrendSelection(std::vector<std::string>(page.monitored.begin(),page.monitored.end()));
+}
+void toggleTrend(Controller& controller,const std::string& key) {
+    if(!page.monitored.insert(key).second)page.monitored.erase(key);
+    updateTrendSelection(controller);
+}
+std::string trendNumber(float value) {
+    char text[32]{};std::snprintf(text,sizeof text,"%.5g",static_cast<double>(value));return text;
+}
+void drawTrend(Controller& controller,const Field& field,const Snapshot& s,float width) {
+    const auto key=trendKey(field);const bool monitored=page.monitored.count(key)!=0;
+    constexpr float graphHeight=25, controlSize=26;
+    const auto found=s.trends.find(key);
+    static const std::vector<float> emptyValues;
+    const auto& values=found==s.trends.end()?emptyValues:found->second;
+    float minimum=0,maximum=1;
+    if(!values.empty()) {
+        minimum=maximum=values.front();
+        for(const auto value:values){minimum=std::min(minimum,value);maximum=std::max(maximum,value);}
+        if(field.type=="BOOL"){minimum=0;maximum=1;}
+        else if(maximum-minimum<.000001f){minimum-=.5f;maximum+=.5f;}
     }
-    ImGui::Dummy({width,height});if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",live?(field.input?tr("Actual valid input trend buckets","实际有效输入趋势区间"):tr("Sampled local output commands; not physical feedback","采样的本地输出命令；不代表物理反馈")):(field.input?tr("Last valid input trend buckets; bus stopped or stale","最后有效输入趋势区间；总线已停止或数据已过期"):tr("Last sampled local output commands; bus stopped or stale","最后采样的本地输出命令；总线已停止或数据已过期")));
+    const float graphWidth=std::max(30.f,width-controlSize-4.f);
+    if(monitored) {
+        if(iconButton("trend-stop",Icon::Stop,tr("Stop capturing this signal","停止采集此信号"),{controlSize,controlSize}))toggleTrend(controller,key);
+    } else {
+        if(iconButton("trend-monitor",Icon::Play,tr("Capture every valid I/O cycle","采集每个有效 I/O 周期"),{controlSize,controlSize}))toggleTrend(controller,key);
+        return;
+    }
+    ImGui::SameLine(0,4);
+    const auto start=ImGui::GetCursorScreenPos();auto* draw=ImGui::GetWindowDrawList();
+    ImGui::Dummy({graphWidth,graphHeight});
+    if(monitored&&!values.empty()) {
+        const auto y=[&](float value) {return start.y+graphHeight-static_cast<float>((value-minimum)/(maximum-minimum)*graphHeight);};
+        const auto color=ImGui::GetColorU32(field.input?teal:amber);
+        // The right edge is always the current end of a fixed 2000-sample
+        // window. New captures occupy the rightmost samples, keeping the time
+        // axis aligned when monitoring is started at different times.
+        constexpr size_t capacity=2000;
+        const float denominator=static_cast<float>(capacity-1);
+        const float firstX=start.x+static_cast<float>(capacity-values.size())*graphWidth/denominator;
+        for(size_t n=1;n<values.size();++n) {
+            const float x1=firstX+(n-1)*graphWidth/denominator,x2=firstX+n*graphWidth/denominator;
+            const float y1=y(values[n-1]),y2=y(values[n]);
+            if(field.type=="BOOL") {
+                draw->AddLine({x1,y1},{x2,y1},color,1.5f);
+                draw->AddLine({x2,y1},{x2,y2},color,1.5f);
+            } else draw->AddLine({x1,y1},{x2,y2},color,1.5f);
+        }
+        const auto minText=std::string(tr("MIN ","下限 "))+trendNumber(minimum);
+        const auto maxText=std::string(tr("MAX ","上限 "))+trendNumber(maximum);
+        const auto labelColor=ImGui::GetColorU32(ImVec4{muted.x,muted.y,muted.z,.9f});
+        draw->AddText(fonts.small,10,{start.x+3,start.y},labelColor,maxText.c_str());
+        draw->AddText(fonts.small,10,{start.x+3,start.y+graphHeight-11},labelColor,minText.c_str());
+    }
+    if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",field.input?tr("Actual valid input samples","实际有效输入采样"):tr("Sampled local output commands; not physical feedback","采样的本地输出命令；不代表物理反馈"));
 }
 void formatToggle(const Field& f,Draft& draft) {
     ImGui::BeginDisabled(f.type.compare(0,4,"REAL")==0);
@@ -233,7 +268,7 @@ void signalTable(Controller& controller,const Snapshot& s,const std::vector<Fiel
                 ImGui::SameLine(0,4);formatToggle(f,draft);ImGui::PopStyleVar();
                 ImGui::PushFont(fonts.small,10);ImGui::TextDisabled("%s %s%s%s",tr("Now","当前"),current.c_str(),f.unit.empty()?"":" ",f.unit.c_str());ImGui::PopFont();
             }
-            if(showTrend){ImGui::TableSetColumnIndex(column++);drawTrend(f,s,std::max(60.f,ImGui::GetContentRegionAvail().x));}
+            if(showTrend){ImGui::TableSetColumnIndex(column++);drawTrend(controller,f,s,std::max(60.f,ImGui::GetContentRegionAvail().x));}
             ImGui::TableSetColumnIndex(column++);
             if(f.input||f.padding)ImGui::TextDisabled("%s",f.padding?tr("Padding","填充位"):tr("Read only","只读"));
             else {
@@ -273,7 +308,11 @@ void inspector(const Snapshot& s,const Field* field) {
 }
 } // namespace
 void bufferPage(Controller& controller,const Snapshot& s) {
-    if(page.generation!=s.generation||page.descriptionRevision!=s.descriptionRevision){page.generation=s.generation;page.descriptionRevision=s.descriptionRevision;page.selection.clear();page.drafts.clear();}
+    if(page.generation!=s.generation||page.descriptionRevision!=s.descriptionRevision){
+        const bool newGeneration=page.generation!=s.generation;
+        page.generation=s.generation;page.descriptionRevision=s.descriptionRevision;page.selection.clear();page.drafts.clear();
+        if(newGeneration&&!page.monitored.empty()){page.monitored.clear();updateTrendSelection(controller);}
+    }
     for(auto& entry:page.drafts)if(entry.second.pending&&s.completed==entry.second.pending){if(s.result.ok)entry.second.dirty=false;entry.second.pending=0;}
     const auto fields=fieldsFor(s);
     std::vector<size_t> visible;const auto query=lower(page.search);

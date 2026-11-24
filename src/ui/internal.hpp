@@ -32,7 +32,7 @@ extern Ui ui;
 extern const char* types[];
 struct Fonts { ImFont* regular=nullptr;ImFont* small=nullptr;ImFont* title=nullptr;ImFont* value=nullptr;ImFont* mono=nullptr; };
 extern Fonts fonts;
-enum class Icon { Network, Box, Scan, Registers, Pulse, Table, Mail, Book, Clock, Logs };
+enum class Icon { Network, Box, Scan, Registers, Pulse, Table, Mail, Book, Clock, Logs, Play, Stop };
 void icon(Icon kind,float size=14,ImU32 color=0);
 bool iconButton(const char* id,Icon kind,const char* tooltip,ImVec2 size={28,28});
 void pill(const char* text,ImVec4 color=teal);

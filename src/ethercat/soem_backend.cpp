@@ -1005,6 +1005,7 @@ public:
                 return error("Target cycle can be changed only while all slaves are INIT or PRE-OP");
         }
         view_.connection.cycleUs=cycleUs;
+        trends_.setCycle(cycleUs);
         return done("Target cycle updated while the bus is stopped");
     }
     Result state(int slave,AlState desired) override {
@@ -1248,6 +1249,7 @@ public:
         const bool valid=view_.expectedWkc?view_.wkc>=view_.expectedWkc:view_.wkc>=0;
         trends_.observe(view_.slaves,view_.connection.cycleUs,valid);
     }
+    void setTrendSelection(const std::vector<std::string>& keys) override {trends_.setSelection(keys,view_.slaves);}
     TrendHistory trendHistory() const override {return trends_.history();}
     void clearTrend() override {trends_.clear();}
     void close() override {

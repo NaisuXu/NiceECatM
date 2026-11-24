@@ -18,6 +18,9 @@ public:
     // stop cooperatively after their current bounded transport transaction.
     bool cancel(uint64_t request);
     Snapshot snapshot() const;
+    // Updates the set of stable PDO keys captured by the I/O owner. Selection
+    // changes are asynchronous and do not perform transport operations.
+    void setTrendSelection(std::vector<std::string> keys);
     // Scripts may opt into a per-I/O-cycle snapshot stream.  The regular
     // snapshot remains throttled for the graphical workbench.
     void enableScriptSnapshots(bool enabled);

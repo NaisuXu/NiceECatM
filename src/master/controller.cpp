@@ -107,6 +107,8 @@ struct Controller::Impl {
     std::atomic<bool> scriptSnapshots{false};
     std::atomic<bool> scriptRunning{false},cancelActive{false},shutdown{false};
     bool activeEeprom=false,activeFoe=false,activeBoot=false;
+    std::vector<std::string> trendSelection;
+    bool trendSelectionDirty=false;
     EepromProgress eeprom;
     FoeProgress foe;
     Result lastResult;
@@ -144,8 +146,18 @@ struct Controller::Impl {
         cycleWait.notify();
 #endif
     }
+    void clearTrendSelection() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            trendSelection.clear();
+            trendSelectionDirty=true;
+        }
+        // Wake a stopped worker so it applies the empty selection and
+        // publishes a snapshot with no stale trend history.
+        notify();
+    }
     void waitForCycle(std::unique_lock<std::mutex>& lock) {
-        const auto canWake=[this]{return quitting||!urgent.empty()||!normal.empty();};
+        const auto canWake=[this]{return quitting||!urgent.empty()||!normal.empty()||trendSelectionDirty;};
 #ifdef _WIN32
         if(cycleWait.available()) {
             // The auto-reset event retains notifications between releasing the
@@ -241,7 +253,7 @@ struct Controller::Impl {
         if(next!=ConnectionMode::Simulation&&next!=ConnectionMode::Hardware&&next!=ConnectionMode::Programming)
             return {false,"Unknown operating mode.",{}};
         if(next==mode)return {true,"Operating mode unchanged.",{}};
-        backend->close();mode=next;
+        backend->close();clearTrendSelection();mode=next;
         backend=mode==ConnectionMode::Simulation?makeSimulation():makeSoem();
         ++generation;resetTiming();markBusy();eeprom={};foe={};descriptions.clear();library={};descriptionDirty=true;
         current=backend->snapshot();current.connection.mode=mode;
@@ -360,11 +372,12 @@ struct Controller::Impl {
             if(mode==ConnectionMode::Programming&&(command.connection.redundant||command.connection.overlap))return {false,"Programming requires a single interface without PDO mapping.",{}};
             ++generation;resetTiming();markBusy();
             eeprom={};foe={};descriptionDirty=true;backend->clearTrend();
+            clearTrendSelection();
             if(mode==ConnectionMode::Programming)return backend->scanProgramming(command.connection,eepromControl());
             return backend->scan(command.connection);
         case CommandKind::Disconnect:
             if(current.running) {auto stop=backend->stop();if(!stop.ok)log(stop);}
-            backend->close();++generation;resetTiming();markBusy();
+            backend->close();clearTrendSelection();++generation;resetTiming();markBusy();
             return {true,"Disconnected; queued commands from the previous connection are invalid.",{}};
         case CommandKind::ReadEeprom:case CommandKind::WriteEeprom:return eepromJob(command);
         case CommandKind::FoeUpload:case CommandKind::FoeDownload:return foeJob(command);
@@ -477,7 +490,8 @@ struct Controller::Impl {
         try {
             backend=makeSoem();log(backend->adapters());log({true,"I/O worker ready. Hardware traffic begins only after selecting an interface and scanning.",{}});publish();
             while(true) {
-                Queued queued{};bool haveCommand=false,cycleDue=false,readDescription=false;
+                Queued queued{};bool haveCommand=false,cycleDue=false,readDescription=false,applyTrendSelection=false;
+                std::vector<std::string> selectedTrends;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
                     auto canReadDescription=[this]{
@@ -485,10 +499,13 @@ struct Controller::Impl {
                             !scriptRunning.load()&&backend->hasPendingPdoDescriptions();
                     };
                     if(!current.running)ready.wait(lock,[&]{
-                        return quitting||!urgent.empty()||!normal.empty()||canReadDescription();
+                        return quitting||!urgent.empty()||!normal.empty()||trendSelectionDirty||canReadDescription();
                     });
                     else if(urgent.empty()&&normal.empty())waitForCycle(lock);
                     if(quitting)break;
+                    if(trendSelectionDirty) {
+                        selectedTrends=trendSelection;trendSelectionDirty=false;applyTrendSelection=true;
+                    }
                     cycleDue=current.running&&Clock::now()>=nextCycle;
                     if(!urgent.empty()) {queued=std::move(urgent.front());urgent.pop_front();haveCommand=true;}
                     else if(!cycleDue&&!normal.empty()) {queued=std::move(normal.front());normal.pop_front();haveCommand=true;}
@@ -501,8 +518,10 @@ struct Controller::Impl {
                         activeBoot=entersBoot(queued.command);
                     }
                 }
+                if(applyTrendSelection)backend->setTrendSelection(selectedTrends);
                 if(haveCommand)execute(std::move(queued));
                 else if(cycleDue)exchange();
+                else if(applyTrendSelection)publish();
                 else if(readDescription) {
                     if(backend->servicePdoDescriptions())descriptionDirty=true;
                     if(!backend->hasPendingPdoDescriptions()||(descriptionDirty&&Clock::now()>=nextPublication))publish();
@@ -546,6 +565,11 @@ uint64_t Controller::submit(Command command) {
     queue.push_back({id,std::move(command),false});impl_->notify();return id;
 }
 Snapshot Controller::snapshot() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->published;}
+void Controller::setTrendSelection(std::vector<std::string> keys) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if(impl_->quitting)return;
+    impl_->trendSelection=std::move(keys);impl_->trendSelectionDirty=true;impl_->notify();
+}
 void Controller::enableScriptSnapshots(bool enabled) { impl_->scriptSnapshots.store(enabled,std::memory_order_relaxed); }
 bool Controller::setScriptRunning(bool running) {
     std::lock_guard<std::mutex> lock(impl_->mutex);

@@ -23,6 +23,10 @@ void drawIcon(Icon kind,ImVec2 p,float size,ImU32 color) {
     case Icon::Logs:rect(3,4,21,20);stroke(7,9,10,12);stroke(10,12,7,15);stroke(13,15,17,15);break;
     case Icon::Clock:draw->AddCircle(point(12,12),9*size/24,color,20,1.25f);stroke(12,6,12,12);stroke(12,12,17,15);break;
     case Icon::Scan:draw->PathArcTo(point(12,12),8*size/24,.1f,5.2f,20);draw->PathStroke(color,0,1.25f);stroke(20,3,20,9);stroke(20,9,14,9);break;
+    case Icon::Play:
+        draw->PathLineTo(point(8,5));draw->PathLineTo(point(19,12));draw->PathLineTo(point(8,19));
+        draw->PathFillConvex(color);break;
+    case Icon::Stop:draw->AddRectFilled(point(7,7),point(17,17),color);break;
     }
 }
 }

@@ -105,6 +105,7 @@ public:
         for(const auto& slave:view_.slaves)if((slave.state&15)!=1&&(slave.state&15)!=2)
             return failure("Target cycle can be changed only while all slaves are INIT or PRE-OP.");
         view_.connection.cycleUs=cycleUs;
+        trends_.setCycle(cycleUs);
         return success("Target cycle updated while the bus is stopped.");
     }
     Result state(int position,AlState requested) override {
@@ -318,6 +319,7 @@ public:
     void sampleTrend() override {
         trends_.observe(view_.slaves,view_.connection.cycleUs,view_.wkc>=view_.expectedWkc);
     }
+    void setTrendSelection(const std::vector<std::string>& keys) override {trends_.setSelection(keys,view_.slaves);}
     TrendHistory trendHistory() const override {return trends_.history();}
     void clearTrend() override {trends_.clear();}
     void close() override {

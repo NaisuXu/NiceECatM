@@ -29,8 +29,10 @@ public:
     virtual bool servicePdoDescriptions() {return false;}
     virtual Result writeOutput(int slave, int offset, const std::vector<uint8_t>&)=0;
     virtual void cycle()=0;
+    // Trend selection is applied by the I/O owner before the next cycle.
+    virtual void setTrendSelection(const std::vector<std::string>&) {}
     // Called by the I/O owner after each cyclic exchange. Implementations
-    // decide whether the exchange is valid before aggregating process values.
+    // decide whether the exchange is valid before recording selected values.
     virtual void sampleTrend() {}
     virtual TrendHistory trendHistory() const {return {};}
     virtual void clearTrend() {}
