@@ -30,7 +30,7 @@ Tests on an Intel I219-LM showed lower typical receive latency. Results depend o
 2. Select a slave in the left topology. Its signals appear in **Buffer · PDO**; inputs are read-only and mapped outputs can be edited directly.
 3. **SAFE-OP** starts cyclic exchange with slave outputs kept safe. **OP** allows output data to be applied. **INIT** / **PRE-OP** stop cyclic exchange; **Disconnect** also closes the connection.
 
-Recent trends are hidden until **Monitor** is clicked for a signal. A monitored signal stores one `float` sample for each valid I/O cycle in a 2,000-sample ring. The I/O worker samples at the target cycle, while the workbench refreshes the visible plot about every 100 ms. At 500 us this is about 1 second of history, and at 10 ms it is about 20 seconds. Click **Stop** to remove a signal from capture.
+Recent trends are hidden until the play icon is clicked for a signal. A monitored signal stores one `float` sample for each valid I/O cycle in a 2,000-sample ring. The small range control below the play/stop icon switches between data min/max and the signal type limits. The I/O worker samples at the target cycle, while the workbench refreshes the visible plot about every 100 ms. At 500 us this is about 1 second of history, and at 10 ms it is about 20 seconds.
 
 Request **PRE-OP** before synchronous ESC register or CoE SDO access, which requires cyclic exchange to be stopped. Use **Diagnostics** and the shared **Log** to check actual states and errors; select a log entry and press **Ctrl+C** to copy it.
 

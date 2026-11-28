@@ -214,7 +214,7 @@ void drawWorkbench(Controller& controller) {
         }
     }
     if(snapshot.connected&&!ui.modeRequest)ui.config=snapshot.connection;
-    consume(snapshot);scriptTick(controller,controller.scriptSnapshot());eepromTick(controller,snapshot);foeTick(controller,snapshot);
+    consume(snapshot);scriptTick();eepromTick(controller,snapshot);foeTick(controller,snapshot);
     const auto* viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{0,0});

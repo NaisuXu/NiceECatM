@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 #include "ui/internal.hpp"
+#include <imgui_internal.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <set>
 #include <vector>
@@ -34,6 +36,7 @@ struct PdoUi {
     std::string selection;
     std::map<std::string,Draft> drafts;
     std::set<std::string> monitored;
+    std::set<std::string> fixedTrendRange;
 };
 PdoUi page;
 std::string lower(std::string value) {
@@ -163,41 +166,91 @@ void toggleTrend(Controller& controller,const std::string& key) {
 std::string trendNumber(float value) {
     char text[32]{};std::snprintf(text,sizeof text,"%.5g",static_cast<double>(value));return text;
 }
+struct TrendBounds {float minimum=0,maximum=1;bool valid=false;};
+TrendBounds typeBounds(const Field& field) {
+    if(field.type=="BOOL")return {0,1,true};
+    if(field.type=="REAL32"||field.type=="REAL64")return {std::numeric_limits<float>::lowest(),std::numeric_limits<float>::max(),true};
+    const bool unsignedType=field.type.compare(0,4,"UINT")==0;
+    const bool signedType=field.type.compare(0,3,"INT")==0;
+    if(!unsignedType&&!signedType)return {};
+    const auto start=field.type.find_first_of("0123456789");
+    if(start==std::string::npos)return {};
+    const auto width=std::strtoul(field.type.c_str()+start,nullptr,10);
+    if(width==0||width>64)return {};
+    const long double scale=std::ldexp(1.0L,static_cast<int>(width-(signedType?1:0)));
+    if(unsignedType)return {0,static_cast<float>(scale-1),true};
+    return {static_cast<float>(-scale),static_cast<float>(scale-1),true};
+}
 void drawTrend(Controller& controller,const Field& field,const Snapshot& s,float width) {
     const auto key=trendKey(field);const bool monitored=page.monitored.count(key)!=0;
-    constexpr float graphHeight=25, controlSize=26;
+    const bool fixedRange=page.fixedTrendRange.count(key)!=0;
+    constexpr float graphHeight=26, controlSize=26, gap=4, rangeWidth=26, rangeHeight=26;
     const auto found=s.trends.find(key);
     static const std::vector<float> emptyValues;
     const auto& values=found==s.trends.end()?emptyValues:found->second;
-    float minimum=0,maximum=1;
-    if(!values.empty()) {
-        minimum=maximum=values.front();
-        for(const auto value:values){minimum=std::min(minimum,value);maximum=std::max(maximum,value);}
-        if(field.type=="BOOL"){minimum=0;maximum=1;}
-        else if(maximum-minimum<.000001f){minimum-=.5f;maximum+=.5f;}
+    TrendBounds bounds=fixedRange?typeBounds(field):TrendBounds{};
+    const auto observedBounds=[&]() {
+        if(values.empty())return TrendBounds{};
+        TrendBounds observed{values.front(),values.front(),true};
+        for(const auto value:values){observed.minimum=std::min(observed.minimum,value);observed.maximum=std::max(observed.maximum,value);}
+        if(field.type=="BOOL"){observed.minimum=0;observed.maximum=1;}
+        else if(observed.maximum-observed.minimum<.000001f){observed.minimum-=.5f;observed.maximum+=.5f;}
+        return observed;
+    };
+    const float span=bounds.maximum-bounds.minimum;
+    if(!bounds.valid||!std::isfinite(bounds.minimum)||!std::isfinite(bounds.maximum)||!std::isfinite(span)||span<=0)bounds=observedBounds();
+    if(!bounds.valid||!std::isfinite(bounds.minimum)||!std::isfinite(bounds.maximum)||!std::isfinite(bounds.maximum-bounds.minimum)||bounds.maximum<=bounds.minimum)bounds={0,1,true};
+    const float minimum=bounds.minimum,maximum=bounds.maximum;
+    // During a live window resize the remaining table column can briefly be
+    // narrower than the two controls. Keep the plot inside its cell instead
+    // of forcing a minimum width that would draw into adjacent columns.
+    float cellWidth=width;
+    ImVec2 cellStart=ImGui::GetCursorScreenPos();
+    float lineY=cellStart.y+4.f;
+    if(const auto* table=ImGui::GetCurrentTable()) {
+        const int column=ImGui::TableGetColumnIndex();
+        if(column>=0&&column<table->ColumnsCount) {
+            cellWidth=table->Columns[column].WorkMaxX-table->Columns[column].WorkMinX;
+            cellStart.x=table->Columns[column].WorkMinX;
+            const auto cellRect=ImGui::TableGetCellBgRect(table,column);
+            lineY=cellRect.Min.y+(cellRect.Max.y-cellRect.Min.y-controlSize)*.5f;
+        }
     }
-    const float graphWidth=std::max(30.f,width-controlSize-4.f);
+    const float graphWidth=std::max(1.f,cellWidth-controlSize-gap-rangeWidth-gap);
+    ImGui::SetCursorScreenPos({cellStart.x,lineY});
     if(monitored) {
         if(iconButton("trend-stop",Icon::Stop,tr("Stop capturing this signal","停止采集此信号"),{controlSize,controlSize}))toggleTrend(controller,key);
-    } else {
-        if(iconButton("trend-monitor",Icon::Play,tr("Capture every valid I/O cycle","采集每个有效 I/O 周期"),{controlSize,controlSize}))toggleTrend(controller,key);
-        return;
-    }
-    ImGui::SameLine(0,4);
+    } else if(iconButton("trend-monitor",Icon::Play,tr("Capture every valid I/O cycle","采集每个有效 I/O 周期"),{controlSize,controlSize}))toggleTrend(controller,key);
+    ImGui::SetCursorScreenPos({cellStart.x+controlSize+gap,lineY+(controlSize-rangeHeight)*.5f});
+    if(fixedRange)ImGui::PushStyleColor(ImGuiCol_Button,{teal.x,teal.y,teal.z,.18f});
+    const bool rangeClicked=iconButton("trend-range",Icon::Range,fixedRange?tr("Use data min/max for the waveform","使用数据最小值/最大值作为波形范围"):tr("Use signal type limits for the waveform","使用信号类型边界作为波形范围"),{rangeWidth,rangeHeight});
+    if(fixedRange)ImGui::PopStyleColor();
+    if(rangeClicked){if(!page.fixedTrendRange.insert(key).second)page.fixedTrendRange.erase(key);}
+    if(!monitored)return;
+    ImGui::SetCursorScreenPos({cellStart.x+controlSize+gap+rangeWidth+gap,lineY+(controlSize-graphHeight)*.5f});
     const auto start=ImGui::GetCursorScreenPos();auto* draw=ImGui::GetWindowDrawList();
     ImGui::Dummy({graphWidth,graphHeight});
-    if(monitored&&!values.empty()) {
-        const auto y=[&](float value) {return start.y+graphHeight-static_cast<float>((value-minimum)/(maximum-minimum)*graphHeight);};
+    if(!values.empty()) {
+        const double lower=bounds.minimum,upper=bounds.maximum;
+        const double span=upper-lower;
+        const auto y=[&](float value) {
+            double normalized=span>0.0&&std::isfinite(span)?(static_cast<double>(value)-lower)/span:0.5;
+            if(!std::isfinite(normalized))normalized=normalized<0.0?0.0:1.0;
+            normalized=std::clamp(normalized,0.0,1.0);
+            return start.y+graphHeight-static_cast<float>(normalized*graphHeight);
+        };
         const auto color=ImGui::GetColorU32(field.input?teal:amber);
         // The right edge is always the current end of a fixed 2000-sample
         // window. New captures occupy the rightmost samples, keeping the time
         // axis aligned when monitoring is started at different times.
         constexpr size_t capacity=2000;
+        const size_t sampleCount=std::min(values.size(),capacity);
+        const size_t firstIndex=values.size()-sampleCount;
         const float denominator=static_cast<float>(capacity-1);
-        const float firstX=start.x+static_cast<float>(capacity-values.size())*graphWidth/denominator;
-        for(size_t n=1;n<values.size();++n) {
+        const float firstX=start.x+static_cast<float>(capacity-sampleCount)*graphWidth/denominator;
+        for(size_t n=1;n<sampleCount;++n) {
             const float x1=firstX+(n-1)*graphWidth/denominator,x2=firstX+n*graphWidth/denominator;
-            const float y1=y(values[n-1]),y2=y(values[n]);
+            const float y1=y(values[firstIndex+n-1]),y2=y(values[firstIndex+n]);
             if(field.type=="BOOL") {
                 draw->AddLine({x1,y1},{x2,y1},color,1.5f);
                 draw->AddLine({x2,y1},{x2,y2},color,1.5f);
@@ -206,8 +259,8 @@ void drawTrend(Controller& controller,const Field& field,const Snapshot& s,float
         const auto minText=std::string(tr("MIN ","下限 "))+trendNumber(minimum);
         const auto maxText=std::string(tr("MAX ","上限 "))+trendNumber(maximum);
         const auto labelColor=ImGui::GetColorU32(ImVec4{muted.x,muted.y,muted.z,.9f});
-        draw->AddText(fonts.small,10,{start.x+3,start.y},labelColor,maxText.c_str());
-        draw->AddText(fonts.small,10,{start.x+3,start.y+graphHeight-11},labelColor,minText.c_str());
+        draw->AddText(fonts.small,10,{start.x+3,start.y+1},labelColor,maxText.c_str());
+        draw->AddText(fonts.small,10,{start.x+3,start.y+11},labelColor,minText.c_str());
     }
     if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",field.input?tr("Actual valid input samples","实际有效输入采样"):tr("Sampled local output commands; not physical feedback","采样的本地输出命令；不代表物理反馈"));
 }
@@ -234,9 +287,9 @@ void signalTable(Controller& controller,const Snapshot& s,const std::vector<Fiel
         ImGui::TableSetupColumn(tr("SIGNAL NAME","信号名称"),ImGuiTableColumnFlags_WidthFixed,signalWidth);
         if(showDevice)ImGui::TableSetupColumn(tr("DEVICE","设备"),ImGuiTableColumnFlags_WidthFixed,110);
         ImGui::TableSetupColumn(tr("TYPE","类型"),ImGuiTableColumnFlags_WidthFixed,57);
-        ImGui::TableSetupColumn(tr("CURRENT VALUE","当前值"),ImGuiTableColumnFlags_WidthFixed,width<630?137.f:155.f);
-        if(showTrend)ImGui::TableSetupColumn(tr("RECENT TREND","最近趋势"),ImGuiTableColumnFlags_WidthStretch,1.f);
+        ImGui::TableSetupColumn(tr("CURRENT VALUE","当前值"),ImGuiTableColumnFlags_WidthFixed,width<630?119.f:137.f);
         ImGui::TableSetupColumn(tr("ACTION","操作"),ImGuiTableColumnFlags_WidthFixed,68);
+        if(showTrend)ImGui::TableSetupColumn(tr("RECENT TREND","最近趋势"),ImGuiTableColumnFlags_WidthStretch,1.f);
         ImGui::TableSetupScrollFreeze(0,1);ImGui::PushFont(fonts.small,10);ImGui::TableHeadersRow();ImGui::PopFont();
         ImGuiListClipper clipper;clipper.Begin(static_cast<int>(visible.size()),53);
         while(clipper.Step())for(int n=clipper.DisplayStart;n<clipper.DisplayEnd;++n) {
@@ -251,14 +304,17 @@ void signalTable(Controller& controller,const Snapshot& s,const std::vector<Fiel
             ImGui::PushFont(fonts.small,10);ImGui::TextColored(f.input?teal:amber,"%s",f.input?"IN · TxPDO":"OUT · RxPDO");
             if(!f.index.empty()){ImGui::SameLine(0,7);ImGui::TextDisabled("%s",f.index.c_str());}ImGui::PopFont();
             if(showDevice){ImGui::TableSetColumnIndex(column++);ImGui::TextUnformatted(f.device->name.c_str());ImGui::PushFont(fonts.small,10);ImGui::TextDisabled("%s %02d",tr("Slave","从站"),f.device->position);ImGui::PopFont();}
-            ImGui::TableSetColumnIndex(column++);ImGui::PushFont(fonts.mono,11);ImGui::TextUnformatted(f.type.c_str());ImGui::PopFont();
+            ImGui::TableSetColumnIndex(column++);ImGui::PushFont(fonts.mono,14);ImGui::TextUnformatted(f.type.c_str());ImGui::PopFont();
             ImGui::TableSetColumnIndex(column++);bool enter=false;
             if(f.type=="BOOL") {
                 const bool on=readBits(fieldBytes(f),0,1)!=0;ImGui::TextColored(on?teal:muted,"%s",on?"1 · TRUE":"0 · FALSE");
                 ImGui::PushFont(fonts.small,10);ImGui::TextDisabled("%s",f.padding?tr("Reserved padding","保留填充位"):(f.input?(liveInput(s)?tr("Valid input","有效输入"):tr("Cached input","缓存输入")):tr("Command image","命令映像")));ImGui::PopFont();
             } else if(f.input||f.padding) {
+                const auto valueStart=ImGui::GetCursorScreenPos();
+                const float formatX=valueStart.x+ImGui::GetContentRegionAvail().x-36.f;
                 ImGui::PushFont(fonts.mono,14);ImGui::TextColored(ink,"%s",current.c_str());ImGui::PopFont();
-                ImGui::SameLine(0,6);formatToggle(f,draft);
+                ImGui::SetCursorScreenPos({formatX,valueStart.y});formatToggle(f,draft);
+                ImGui::SetCursorScreenPos({valueStart.x,valueStart.y+ImGui::GetFrameHeight()});
                 ImGui::PushFont(fonts.small,10);if(!f.unit.empty())ImGui::TextDisabled("%s",f.unit.c_str());else ImGui::TextDisabled("%s",f.padding?tr("Reserved padding","保留填充位"):(liveInput(s)?tr("Valid input","有效输入"):tr("Cached input","缓存输入")));ImGui::PopFont();
             } else {
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{5,3});ImGui::SetNextItemWidth(std::max(60.f,ImGui::GetContentRegionAvail().x-40));
@@ -268,15 +324,19 @@ void signalTable(Controller& controller,const Snapshot& s,const std::vector<Fiel
                 ImGui::SameLine(0,4);formatToggle(f,draft);ImGui::PopStyleVar();
                 ImGui::PushFont(fonts.small,10);ImGui::TextDisabled("%s %s%s%s",tr("Now","当前"),current.c_str(),f.unit.empty()?"":" ",f.unit.c_str());ImGui::PopFont();
             }
-            if(showTrend){ImGui::TableSetColumnIndex(column++);drawTrend(controller,f,s,std::max(60.f,ImGui::GetContentRegionAvail().x));}
             ImGui::TableSetColumnIndex(column++);
-            if(f.input||f.padding)ImGui::TextDisabled("%s",f.padding?tr("Padding","填充位"):tr("Read only","只读"));
-            else {
+            const auto actionStart=ImGui::GetCursorScreenPos();
+            if(f.input||f.padding) {
+                ImGui::SetCursorScreenPos({actionStart.x,actionStart.y+9.f});
+                ImGui::TextDisabled("%s",f.padding?tr("Padding","填充位"):tr("Read only","只读"));
+            } else {
+                ImGui::SetCursorScreenPos({actionStart.x,actionStart.y+4.f});
                 ImGui::BeginDisabled(!writable(s,*f.device));const bool on=f.type=="BOOL"&&readBits(fieldBytes(f),0,1)!=0;
                 const bool click=ImGui::Button(f.type=="BOOL"?(on?tr("Set 0","置 0"):tr("Set 1","置 1")):tr("Write","写入"),{47,26});
                 if(click||enter)sendField(controller,s,f,f.type=="BOOL"?(on?"0":"1"):draft.value,draft.hex,&draft);
                 ImGui::EndDisabled();
             }
+            if(showTrend){ImGui::TableSetColumnIndex(column++);drawTrend(controller,f,s,std::max(60.f,ImGui::GetContentRegionAvail().x));}
             ImGui::PopID();
         }
         ImGui::EndTable();
@@ -312,6 +372,7 @@ void bufferPage(Controller& controller,const Snapshot& s) {
         const bool newGeneration=page.generation!=s.generation;
         page.generation=s.generation;page.descriptionRevision=s.descriptionRevision;page.selection.clear();page.drafts.clear();
         if(newGeneration&&!page.monitored.empty()){page.monitored.clear();updateTrendSelection(controller);}
+        if(newGeneration)page.fixedTrendRange.clear();
     }
     for(auto& entry:page.drafts)if(entry.second.pending&&s.completed==entry.second.pending){if(s.result.ok)entry.second.dirty=false;entry.second.pending=0;}
     const auto fields=fieldsFor(s);

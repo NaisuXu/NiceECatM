@@ -51,6 +51,8 @@ struct HostCallbacks {
     // ReadSignal). It is called on the script thread and must not touch SOEM.
     // Return true when result has been filled; false falls through to submit.
     std::function<bool(const ScriptRequest&,HostResult&)> execute;
+    // Runs on the Lua worker after its last callback, including errors/stops.
+    std::function<void()> finished;
 };
 
 enum class Status { Empty, Ready, Running, Waiting, Stopped, Error };

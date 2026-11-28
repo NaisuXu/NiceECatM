@@ -533,7 +533,13 @@ bool Runtime::start() {
     }
     if(self.thread.joinable())self.thread.join();
     std::lock_guard<std::mutex> lock(self.mutex);
-    self.stopRequested=false;self.error.clear();self.instructionCount=self.callbackCount=0;self.state=Status::Running;self.thread=std::thread([p=impl_.get()]{p->run();});return true;
+    self.stopRequested=false;self.error.clear();self.instructionCount=self.callbackCount=0;
+    self.state=Status::Running;
+    self.thread=std::thread([p=impl_.get()]{
+        p->run();
+        if(p->callbacks.finished)p->callbacks.finished();
+    });
+    return true;
 }
 void Runtime::stop(){impl_->stop();}
 void Runtime::updateSnapshot(const Snapshot& snapshot){impl_->update(snapshot);}

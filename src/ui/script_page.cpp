@@ -3,16 +3,13 @@
 
 #include "ui/internal.hpp"
 #include "platform/paths.hpp"
-#include "script/bridge.hpp"
-#include "script/runtime.hpp"
+#include "script/session.hpp"
 #include "TextEditor.h"
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,10 +17,6 @@
 namespace niceecatm::workbench {
 namespace {
 
-// The editor deliberately owns no SOEM or backend object.  Runtime operations
-// cross the ScriptRuntime/Bridge boundary and enter the existing controller
-// queue. Keeping this state local means opening the Scripts page does not
-// change a bus state until the user presses Run.
 constexpr size_t sourceCapacity=64*1024;
 const char* starterSource=R"LUA(-- NiceECatM script
 -- Attach to the workbench connection first. Scan only when no bus is connected.
@@ -60,21 +53,16 @@ struct ScriptUi {
     int selected=-1, renameIndex=-1;
     std::filesystem::path directory;
     std::vector<ScriptFile> files;
-    std::vector<uint64_t> pending;
     uint64_t lastRuntimeLog=0;
-    std::unique_ptr<script::Bridge> bridge;
-    std::unique_ptr<script::Runtime> runtime;
+    std::unique_ptr<script::Session> session;
     std::unique_ptr<TextEditor> editor;
     Controller* controller=nullptr;
-    std::mutex runtimeMutex;
     std::string error;
     char name[192]="untitled.lua";
     char rename[192]="";
     char source[sourceCapacity]{};
 };
 ScriptUi script;
-
-uint64_t hostSubmit(const script::ScriptRequest& request);
 
 std::string pathName(const std::filesystem::path& path) {
     try { return path.filename().u8string(); } catch(...) { return path.filename().string(); }
@@ -138,26 +126,6 @@ bool pullEditorToSource() {
 
 void addLog(const std::string& line,bool error=false) {
     if(script.controller)script.controller->appendLog("Script: "+line,error);
-}
-
-uint64_t immediateResult(script::HostResult result) {
-    static std::atomic<uint64_t> next{1};
-    const auto id=UINT64_C(0x8000000000000000)|next.fetch_add(1);
-    if(script.runtime)script.runtime->complete(id,std::move(result));
-    return id;
-}
-
-uint64_t hostSubmit(const script::ScriptRequest& request) {
-    if(!script.bridge)return 0;
-    if(request.kind==script::RequestKind::ReadSignal) {
-        const auto info=request.signal.empty()?script.bridge->readSignal(request.slave,request.index,request.subindex):script.bridge->readSignal(request.slave,request.signal);
-        if(!info.valid)return immediateResult({false,info.error.empty()?"Signal is unavailable.":info.error,{}});
-        return immediateResult({true,info.value,{}});
-    }
-    std::string error;const auto id=script.bridge->submit(request,&error);
-    if(!id)return immediateResult({false,error.empty()?"Host rejected the script request.":error,{}});
-    {std::lock_guard<std::mutex> lock(script.runtimeMutex);script.pending.push_back(id);}
-    return id;
 }
 
 void refreshFiles() {
@@ -312,8 +280,8 @@ bool renameFile(int index,const std::string& requested) {
     script.renameIndex=-1;script.error.clear();addLog("Renamed "+oldName+" to "+newName);return true;
 }
 
-void ensureInitialized(Controller* controller) {
-    if(controller)script.controller=controller;
+void ensureInitialized(Controller& controller) {
+    script.controller=&controller;
     if(!script.initialized) {
         script.initialized=true;
         try { script.directory=executableDirectory()/"scripts";std::filesystem::create_directories(script.directory); }
@@ -328,42 +296,11 @@ void ensureInitialized(Controller* controller) {
     }
     if(!script.editor)script.editor=std::make_unique<TextEditor>();
     if(script.editorSync)syncEditorFromSource();
-    if(controller&&!script.runtime) {
-        script.bridge=std::make_unique<script::Bridge>(*controller);
-        script.runtime=std::make_unique<script::Runtime>(script::HostCallbacks{
-            [](const script::ScriptRequest& request){return hostSubmit(request);},
-            [](const script::ScriptRequest& request,script::HostResult& result){return script.bridge&&script.bridge->execute(request,result);}
-        });
-    }
+    if(!script.session)script.session=std::make_unique<script::Session>(controller);
 }
 
-void cancelPendingRequests() {
-    if(!script.bridge)return;
-    std::vector<uint64_t> pending;
-    { std::lock_guard<std::mutex> lock(script.runtimeMutex);pending=script.pending;script.pending.clear(); }
-    for(const auto id:pending)script.bridge->cancel(id);
-}
-
-void pumpRuntime(const Snapshot& snapshot) {
-    if(!script.runtime||!script.bridge)return;
-    script.runtime->updateSnapshot(snapshot);
-    std::vector<uint64_t> pending;
-    { std::lock_guard<std::mutex> lock(script.runtimeMutex);pending=script.pending; }
-    std::vector<uint64_t> completed;
-    for(const auto id:pending) {
-        Result result;
-        if(!script.bridge->result(id,result))continue;
-        script.runtime->complete(id,{result.ok,result.message,result.data,result.adapters});completed.push_back(id);
-    }
-    if(!completed.empty()) {
-        std::lock_guard<std::mutex> lock(script.runtimeMutex);
-        script.pending.erase(std::remove_if(script.pending.begin(),script.pending.end(),[&](uint64_t id){return std::find(completed.begin(),completed.end(),id)!=completed.end();}),script.pending.end());
-    }
-    const auto view=script.runtime->snapshot();
-    // The UI can stop a script before the runtime worker publishes its final
-    // state. Never let that stale Running/Waiting snapshot resurrect the
-    // visible running state after a manual disconnect or stop request.
-    if(script.running)script.running=view.status==script::Status::Running||view.status==script::Status::Waiting;
+void showSessionStatus(const script::View& view) {
+    script.running=view.status==script::Status::Running||view.status==script::Status::Waiting;
     // Runtime errors are retained in snapshots after execution stops. Only
     // forward new log events: editor actions clear script.error, and using
     // that mutable UI text to deduplicate snapshots replays old failures.
@@ -599,7 +536,7 @@ void apiCard() {
     ImGui::EndChild();
 }
 
-void actions(Controller& controller,const Snapshot& snapshot) {
+void actions(const Snapshot& snapshot) {
     if(ImGui::Button(tr("Open / Reload","打开 / 重新加载"))) {
         if(script.selected>=0&&script.selected<static_cast<int>(script.files.size()))loadFile(script.files[script.selected],true);
         else { script.error="Select a script from the list first.";addLog(script.error,true); }
@@ -621,25 +558,18 @@ void actions(Controller& controller,const Snapshot& snapshot) {
             addLog(script.error,true);
             return;
         }
-        if(!script.runtime)ensureInitialized(&controller);
-        cancelPendingRequests();
-        if(script.runtime&&script.runtime->load(script.name,std::string(script.source))) {
-            if(!controller.setScriptRunning(true)) {
-                addLog(tr("Wait for the FoE transfer to finish before starting a script.","请等待 FoE 传输结束后再运行脚本。"),true);return;
-            }
-            if(controller.snapshot().connection.mode==ConnectionMode::Programming){controller.setScriptRunning(false);addLog(tr("Scripts are unavailable in Programming mode.","编程模式下不能运行脚本。"),true);return;}
-            if(script.runtime->start()){script.running=true;script.error.clear();addLog("Script started");}
-            else {controller.setScriptRunning(false);script.error="The script runtime could not start.";addLog(script.error,true);}
+        if(script.session->start(script.name,script.source)) {
+            script.running=true;script.error.clear();addLog("Script started");
         } else {
-            const auto view=script.runtime?script.runtime->snapshot():script::View{};
-            script.error=view.error.empty()?"The script could not be loaded.":view.error;addLog(script.error,true);
+            const auto view=script.session->snapshot();
+            script.running=false;
+            script.error=view.error.empty()?"The script runtime could not start.":view.error;addLog(script.error,true);
         }
     }
     ImGui::SameLine();
     if(ImGui::Button(tr("Stop","停止"))) {
-        cancelPendingRequests();
-        if(script.runtime)script.runtime->stop();
-        script.running=false;controller.setScriptRunning(false);addLog("Script stopped");
+        script.session->stop();
+        script.running=false;addLog("Script stopped");
     }
     ImGui::SameLine(0,8);
     const float statusY=ImGui::GetCursorPosY();ImGui::SetCursorPosY(statusY+2.0f);
@@ -648,34 +578,25 @@ void actions(Controller& controller,const Snapshot& snapshot) {
 
 } // namespace
 
-void scriptTick(Controller& controller,const Snapshot& snapshot) {
-    script.controller=&controller;
-    controller.setScriptRunning(script.running);
-    if(script.initialized) {
-        controller.enableScriptSnapshots(script.running);
-        pumpRuntime(snapshot);
-        controller.enableScriptSnapshots(script.running);
-    }
-    controller.setScriptRunning(script.running);
+void scriptTick() {
+    if(script.session)showSessionStatus(script.session->snapshot());
 }
 
 bool scriptRunning() {return script.running;}
-void stopScript(Controller& controller) {
+void stopScript() {
     if(!script.running)return;
-    cancelPendingRequests();
-    if(script.runtime)script.runtime->stop();
+    script.session->stop();
     script.running=false;
-    controller.setScriptRunning(false);
     addLog("Script stopped before disconnect");
 }
 
 void scriptPage(Controller& controller,const Snapshot& snapshot) {
-    ensureInitialized(&controller);
+    ensureInitialized(controller);
     pullEditorToSource();
     const float available=ImGui::GetContentRegionAvail().y;
     // Script failures are already appended to the shared log window.  Keep
     // the action row compact and avoid repeating the same error beside it.
-    ImGui::BeginGroup();actions(controller,snapshot);ImGui::EndGroup();
+    ImGui::BeginGroup();actions(snapshot);ImGui::EndGroup();
     ImGui::Spacing();
     const float editorHeight=std::max(260.f,available-42.f);
     if(ImGui::BeginTable("script-layout",3,ImGuiTableFlags_SizingStretchProp|ImGuiTableFlags_BordersInnerV)) {
@@ -689,11 +610,9 @@ void scriptPage(Controller& controller,const Snapshot& snapshot) {
 }
 
 void shutdownScriptPage() {
-    cancelPendingRequests();
-    if(script.runtime)script.runtime->stop();
-    if(script.controller)script.controller->setScriptRunning(false);
-    script.runtime.reset();
-    script.bridge.reset();
+    script.session.reset();
+    script.running=false;
+    script.controller=nullptr;
 }
 } // namespace niceecatm::workbench
 

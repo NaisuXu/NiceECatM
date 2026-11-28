@@ -220,7 +220,7 @@ void sidebar(Controller& c,const Snapshot& s) {
     if(iconButton("refresh-adapters",Icon::Scan,tr("Refresh interfaces","刷新网卡"),{25,20}))command(c,s,CommandKind::RefreshAdapters);
     ImGui::EndDisabled();ImGui::SameLine(43);ImGui::BeginDisabled(!s.connected);
     if(ImGui::Button(label("Disconnect","断开连接","disconnect").c_str(),{-1,20})) {
-        if(scriptRunning())stopScript(c);
+        if(scriptRunning())stopScript();
         command(c,s,CommandKind::Disconnect);
     }
     ImGui::EndDisabled();tooltip("Disconnect to edit connection settings.","断开连接后才能编辑连接设置");

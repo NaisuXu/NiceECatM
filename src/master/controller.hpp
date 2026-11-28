@@ -24,6 +24,10 @@ public:
     // Scripts may opt into a per-I/O-cycle snapshot stream.  The regular
     // snapshot remains throttled for the graphical workbench.
     void enableScriptSnapshots(bool enabled);
+    // Start with version zero. Returns the latest snapshot when a cycle,
+    // state update or command completion has arrived since the last read.
+    // Disabling the stream wakes the waiting consumer and returns false.
+    bool waitForScriptUpdate(uint64_t& version, Snapshot& snapshot) const;
     // GUI/runtime lifecycle gate, independent of the optional fast snapshots.
     bool setScriptRunning(bool running);
     Snapshot scriptSnapshot() const;

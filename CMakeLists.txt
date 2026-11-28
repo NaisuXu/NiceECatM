@@ -21,6 +21,7 @@ add_library(niceecatm_core STATIC
   src/master/controller.cpp
   src/script/bridge.cpp
   src/script/runtime.cpp
+  src/script/session.cpp
   src/ethercat/simulation.cpp
   src/ethercat/eeprom_job.cpp
   src/ethercat/foe_job.cpp

@@ -27,6 +27,7 @@ void drawIcon(Icon kind,ImVec2 p,float size,ImU32 color) {
         draw->PathLineTo(point(8,5));draw->PathLineTo(point(19,12));draw->PathLineTo(point(8,19));
         draw->PathFillConvex(color);break;
     case Icon::Stop:draw->AddRectFilled(point(7,7),point(17,17),color);break;
+    case Icon::Range:stroke(5,7,19,7);stroke(5,17,19,17);stroke(5,4,5,10);stroke(19,14,19,20);break;
     }
 }
 }

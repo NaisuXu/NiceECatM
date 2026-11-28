@@ -95,6 +95,8 @@ struct Controller::Impl {
     struct Queued {uint64_t id;Command command;bool canceled=false;};
     mutable std::mutex mutex;
     std::condition_variable ready;
+    std::condition_variable scriptUpdated;
+    uint64_t scriptVersion=0;
 #ifdef _WIN32
     CycleWait cycleWait;
 #endif
@@ -138,6 +140,7 @@ struct Controller::Impl {
     ~Impl() {
         shutdown.store(true);cancelActive.store(true);
         {std::lock_guard<std::mutex> lock(mutex);quitting=true;}
+        scriptUpdated.notify_all();
         notify();if(worker.joinable())worker.join();
     }
     void notify() {
@@ -145,6 +148,13 @@ struct Controller::Impl {
 #ifdef _WIN32
         cycleWait.notify();
 #endif
+    }
+    // Called with mutex held, after publishing data visible to the Lua host.
+    void notifyScriptUpdate() {
+        if(scriptSnapshots.load(std::memory_order_relaxed)) {
+            ++scriptVersion;
+            scriptUpdated.notify_all();
+        }
     }
     void clearTrendSelection() {
         {
@@ -221,7 +231,11 @@ struct Controller::Impl {
         current.cycles=cycles;current.missed=missed;current.actualCycleUs=actualCycle;current.maxJitterUs=maxJitter;
         // Keep live transport health from the backend; the last command result
         // is a separate field and must never hide a later stale/WKC failure.
-        {std::lock_guard<std::mutex> lock(mutex);current.logs=logs;published=current;scriptPublished=current;}
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            current.logs=logs;published=current;scriptPublished=current;
+            notifyScriptUpdate();
+        }
         nextPublication=Clock::now()+std::chrono::milliseconds(100);
     }
     void publishScriptSnapshot() {
@@ -240,6 +254,7 @@ struct Controller::Impl {
             fast.slaves[n].esiSdoDictionary=published.slaves[n].esiSdoDictionary;
         }
         scriptPublished=std::move(fast);
+        notifyScriptUpdate();
     }
     void markBusy() {
         std::lock_guard<std::mutex> lock(mutex);published.busy=true;published.generation=generation;
@@ -457,6 +472,9 @@ struct Controller::Impl {
             activeFoe=false;
             activeBoot=false;
             while(resultHistory.size()>512)resultHistory.erase(resultHistory.begin());
+            // A command may be the last event before the bus goes idle.
+            // Wake again now that result() can see its completion.
+            notifyScriptUpdate();
         }
     }
     void exchange() {
@@ -483,8 +501,8 @@ struct Controller::Impl {
             auto skipped=(completed-nextCycle)/period+1;
             missed+=uint64_t(skipped);nextCycle+=period*skipped;
         }
-        publishScriptSnapshot();
         if(completed>=nextPublication)publish();
+        else publishScriptSnapshot();
     }
     void run() {
         try {
@@ -532,6 +550,8 @@ struct Controller::Impl {
         } catch(const std::exception& error) {
             std::lock_guard<std::mutex> lock(mutex);published.busy=false;published.running=false;published.connected=false;
             published.result={false,std::string("I/O worker failed: ")+error.what(),{}};published.status=published.result.message;
+            scriptPublished=published;
+            notifyScriptUpdate();
         }
     }
 };
@@ -570,7 +590,22 @@ void Controller::setTrendSelection(std::vector<std::string> keys) {
     if(impl_->quitting)return;
     impl_->trendSelection=std::move(keys);impl_->trendSelectionDirty=true;impl_->notify();
 }
-void Controller::enableScriptSnapshots(bool enabled) { impl_->scriptSnapshots.store(enabled,std::memory_order_relaxed); }
+void Controller::enableScriptSnapshots(bool enabled) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    if(impl_->scriptSnapshots.exchange(enabled,std::memory_order_relaxed)==enabled)return;
+    ++impl_->scriptVersion;
+    impl_->scriptUpdated.notify_all();
+}
+bool Controller::waitForScriptUpdate(uint64_t& version,Snapshot& snapshot) const {
+    std::unique_lock<std::mutex> lock(impl_->mutex);
+    impl_->scriptUpdated.wait(lock,[&]{
+        return impl_->quitting||!impl_->scriptSnapshots.load(std::memory_order_relaxed)||impl_->scriptVersion!=version;
+    });
+    if(impl_->quitting||!impl_->scriptSnapshots.load(std::memory_order_relaxed))return false;
+    version=impl_->scriptVersion;
+    snapshot=impl_->scriptPublished;
+    return true;
+}
 bool Controller::setScriptRunning(bool running) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if(running&&(impl_->activeFoe||impl_->activeBoot))return false;

@@ -83,7 +83,7 @@ Connection generation protects queued commands from obsolete contexts. Lua handl
 
 Numeric timer durations are milliseconds. Strings such as `"1s"` or `"1000us"` are accepted when the result is at least 1 ms. Periods below 1 ms are rejected. Host timers are suitable for polling and timeouts; they do not run exactly at an EtherCAT cycle edge.
 
-The cycle parameter is a positive cycle count: 1 follows received cycle snapshots, 2 waits for at least two elapsed cycles, and so on. The callback receives `frame`, containing `cycles`, `missed`, `wkc`, `expected_wkc`, `connected`, `running`, `status` and a `slaves` array with input/output hex snapshots. Intermediate cycles may be skipped when the worker or UI is delayed; skipped callbacks are not replayed.
+The cycle parameter is a positive cycle count: 1 follows received cycle snapshots, 2 waits for at least two elapsed cycles, and so on. The callback receives `frame`, containing `cycles`, `missed`, `wkc`, `expected_wkc`, `connected`, `running`, `status` and a `slaves` array with input/output hex snapshots. The controller delivers cycle updates and command results independently of window redraws. If the script worker falls behind, it resumes from the latest observed cycle and skips intermediate callbacks.
 
 Callbacks run serially. Up to 64 timer/cycle tasks may coexist by default. Cancellation returns `true` for a live task of the matching kind, or `false` for an absent, expired, already cancelled or other-kind ID. IDs must be positive whole numbers of numeric type; invalid arguments raise a Lua error.
 
